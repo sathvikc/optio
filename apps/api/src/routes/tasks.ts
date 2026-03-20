@@ -20,12 +20,10 @@ export async function taskRoutes(app: FastifyInstance) {
   // List tasks
   app.get("/api/tasks", async (req, reply) => {
     const query = req.query as { state?: string; limit?: string; offset?: string };
-    const tasks = await taskService.listTasks({
-      state: query.state,
-      limit: query.limit ? parseInt(query.limit, 10) : 50,
-      offset: query.offset ? parseInt(query.offset, 10) : 0,
-    });
-    reply.send({ tasks });
+    const limit = query.limit ? parseInt(query.limit, 10) : 50;
+    const offset = query.offset ? parseInt(query.offset, 10) : 0;
+    const taskList = await taskService.listTasks({ state: query.state, limit, offset });
+    reply.send({ tasks: taskList, limit, offset });
   });
 
   // Get task

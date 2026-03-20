@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { buildServer } from "./server.js";
 import { startTaskWorker } from "./workers/task-worker.js";
 import { startTicketSyncWorker } from "./workers/ticket-sync-worker.js";

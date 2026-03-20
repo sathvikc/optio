@@ -1,5 +1,6 @@
 import Fastify, { type FastifyError } from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { healthRoutes } from "./routes/health.js";
 import { taskRoutes } from "./routes/tasks.js";
@@ -29,6 +30,11 @@ export async function buildServer() {
 
   // Plugins
   await app.register(cors, { origin: true });
+  await app.register(rateLimit, {
+    max: 100,
+    timeWindow: "1 minute",
+    allowList: ["127.0.0.1", "::1"],
+  });
   await app.register(websocket);
 
   // REST routes
