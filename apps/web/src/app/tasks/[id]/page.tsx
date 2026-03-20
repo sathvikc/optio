@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { use, useState, useEffect } from "react";
 import { useTask } from "@/hooks/use-task";
 import { LogViewer } from "@/components/log-viewer";
@@ -29,6 +30,9 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
   const [actionLoading, setActionLoading] = useState(false);
   const [resumePrompt, setResumePrompt] = useState("");
   const [showTimeline, setShowTimeline] = useState(true);
+  const [subtasks, setSubtasks] = useState<any[]>([]);
+  const [showCreateSubtask, setShowCreateSubtask] = useState(false);
+  const [newSubtask, setNewSubtask] = useState({ title: "", prompt: "", taskType: "child", blocksParent: false });
 
   // Auto-refresh task state periodically when active
   useEffect(() => {
@@ -38,6 +42,12 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
     const interval = setInterval(refresh, 5000);
     return () => clearInterval(interval);
   }, [task?.state, refresh]);
+
+  useEffect(() => {
+    if (task) {
+      api.getSubtasks(id).then((res) => setSubtasks(res.subtasks)).catch(() => {});
+    }
+  }, [id, task?.state]);
 
   const handleCancel = async () => {
     setActionLoading(true);
@@ -65,6 +75,29 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       setResumePrompt("");
       await refresh();
     } catch {}
+    setActionLoading(false);
+  };
+
+  const handleCreateSubtask = async () => {
+    if (!newSubtask.title.trim() || !newSubtask.prompt.trim()) return;
+    setActionLoading(true);
+    try {
+      await api.createSubtask(id, {
+        title: newSubtask.title,
+        prompt: newSubtask.prompt,
+        taskType: newSubtask.taskType as any,
+        blocksParent: newSubtask.blocksParent,
+      });
+      toast.success("Subtask created and queued");
+      setShowCreateSubtask(false);
+      setNewSubtask({ title: "", prompt: "", taskType: "child", blocksParent: false });
+      // Refresh subtasks
+      const res = await api.getSubtasks(id);
+      setSubtasks(res.subtasks);
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create subtask");
+    }
     setActionLoading(false);
   };
 
@@ -309,6 +342,106 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
               <div className="mt-2 p-2 rounded-md bg-warning/5 border border-warning/20 text-xs">
                 <div className="font-medium text-warning mb-1">Review feedback:</div>
                 <pre className="text-text-muted whitespace-pre-wrap">{task.prReviewComments}</pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Subtasks */}
+      {(subtasks.length > 0 || task.state === "pr_opened" || task.state === "running") && (
+        <div className="shrink-0 border-b border-border bg-bg px-4 py-2.5">
+          <div className="max-w-5xl mx-auto">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-medium text-text-muted">
+                Subtasks {subtasks.length > 0 && `(${subtasks.filter((s: any) => s.state === "completed").length}/${subtasks.length})`}
+              </h3>
+              <button
+                onClick={() => setShowCreateSubtask(!showCreateSubtask)}
+                className="text-xs text-primary hover:underline"
+              >
+                {showCreateSubtask ? "Cancel" : "+ Add subtask"}
+              </button>
+            </div>
+
+            {/* Create subtask form */}
+            {showCreateSubtask && (
+              <div className="p-3 rounded-md border border-border bg-bg-card space-y-2 mb-2">
+                <input
+                  value={newSubtask.title}
+                  onChange={(e) => setNewSubtask((s) => ({ ...s, title: e.target.value }))}
+                  placeholder="Subtask title"
+                  className="w-full px-3 py-1.5 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary"
+                />
+                <textarea
+                  value={newSubtask.prompt}
+                  onChange={(e) => setNewSubtask((s) => ({ ...s, prompt: e.target.value }))}
+                  placeholder="What should the agent do?"
+                  rows={3}
+                  className="w-full px-3 py-1.5 rounded-md bg-bg border border-border text-xs font-mono focus:outline-none focus:border-primary resize-y"
+                />
+                <div className="flex items-center gap-4">
+                  <select
+                    value={newSubtask.taskType}
+                    onChange={(e) => setNewSubtask((s) => ({ ...s, taskType: e.target.value }))}
+                    className="px-2 py-1 rounded-md bg-bg border border-border text-xs"
+                  >
+                    <option value="child">Child task</option>
+                    <option value="step">Sequential step</option>
+                    <option value="review">Code review</option>
+                  </select>
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newSubtask.blocksParent}
+                      onChange={(e) => setNewSubtask((s) => ({ ...s, blocksParent: e.target.checked }))}
+                      className="w-3 h-3 rounded"
+                    />
+                    Blocks parent
+                  </label>
+                  <button
+                    onClick={handleCreateSubtask}
+                    disabled={actionLoading || !newSubtask.title.trim()}
+                    className="px-3 py-1 rounded-md bg-primary text-white text-xs hover:bg-primary-hover disabled:opacity-50 ml-auto"
+                  >
+                    Create & Queue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Subtask list */}
+            {subtasks.length > 0 && (
+              <div className="space-y-1">
+                {subtasks.map((sub: any) => (
+                  <Link
+                    key={sub.id}
+                    href={`/tasks/${sub.id}`}
+                    className={cn(
+                      "flex items-center gap-2 p-2 rounded-md border text-xs transition-colors hover:bg-bg-hover",
+                      sub.taskType === "review"
+                        ? "border-info/20 bg-info/5"
+                        : sub.blocksParent
+                          ? "border-warning/20 bg-warning/5"
+                          : "border-border bg-bg-card",
+                    )}
+                  >
+                    {sub.taskType === "review" ? (
+                      <Bot className="w-3.5 h-3.5 text-info shrink-0" />
+                    ) : sub.blocksParent ? (
+                      <span className="w-3.5 h-3.5 text-warning shrink-0 text-center font-bold">!</span>
+                    ) : (
+                      <span className="w-3.5 h-3.5 text-text-muted shrink-0 text-center">•</span>
+                    )}
+                    <span className="truncate flex-1">{sub.title}</span>
+                    {sub.blocksParent && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-warning/10 text-warning shrink-0">
+                        blocking
+                      </span>
+                    )}
+                    <StateBadge state={sub.state} />
+                  </Link>
+                ))}
               </div>
             )}
           </div>

@@ -257,6 +257,27 @@ export const api = {
   launchReview: (taskId: string) =>
     request<{ reviewTaskId: string }>(`/api/tasks/${taskId}/review`, { method: "POST" }),
 
+  // Subtasks
+  getSubtasks: (taskId: string) =>
+    request<{ subtasks: any[] }>(`/api/tasks/${taskId}/subtasks`),
+
+  createSubtask: (taskId: string, data: {
+    title: string;
+    prompt: string;
+    taskType?: string;
+    blocksParent?: boolean;
+    autoQueue?: boolean;
+  }) =>
+    request<{ subtask: any }>(`/api/tasks/${taskId}/subtasks`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  getSubtaskStatus: (taskId: string) =>
+    request<{ allComplete: boolean; total: number; pending: number; running: number; completed: number; failed: number }>(
+      `/api/tasks/${taskId}/subtasks/status`,
+    ),
+
   assignIssue: (data: {
     issueNumber: number;
     repoId: string;

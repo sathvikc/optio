@@ -282,6 +282,15 @@ export function startTaskWorker() {
           await taskService.transitionTask(taskId, TaskState.FAILED, "agent_failure", result.error);
           log.warn({ error: result.error }, "Task failed");
         }
+
+        // If this is a subtask, check if parent should advance
+        const completedTask = await taskService.getTask(taskId);
+        if (completedTask?.parentTaskId) {
+          const { onSubtaskComplete } = await import("../services/subtask-service.js");
+          await onSubtaskComplete(taskId).catch((err) =>
+            log.warn({ err }, "Failed to check parent subtask status"),
+          );
+        }
       } catch (err) {
         log.error({ err }, "Task worker error");
         try {

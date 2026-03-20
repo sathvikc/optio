@@ -1,18 +1,13 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { tasks, repos } from "../db/schema.js";
+import { repos } from "../db/schema.js";
 import {
   TaskState,
   DEFAULT_REVIEW_PROMPT_TEMPLATE,
   REVIEW_TASK_FILE_PATH,
   renderPromptTemplate,
-  renderTaskFile,
 } from "@optio/shared";
-import { getAdapter } from "@optio/agent-adapters";
 import * as taskService from "./task-service.js";
-import * as repoPool from "./repo-pool-service.js";
-import { resolveSecretsForTask, retrieveSecret } from "./secret-service.js";
-import { getClaudeAuthToken } from "./auth-service.js";
 import { taskQueue } from "../workers/task-worker.js";
 import { logger } from "../logger.js";
 
@@ -32,23 +27,19 @@ export async function launchReview(parentTaskId: string): Promise<string> {
   // Get repo config
   const [repoConfig] = await db.select().from(repos).where(eq(repos.repoUrl, parentTask.repoUrl));
 
-  // Create the review task
-  const reviewTask = await taskService.createTask({
+  // Create the review task as a subtask
+  const { createSubtask, queueSubtask } = await import("./subtask-service.js");
+
+  const subtask = await createSubtask({
+    parentTaskId,
     title: `Review: ${parentTask.title}`,
     prompt: `Review PR #${prNumber} for: ${parentTask.title}`,
-    repoUrl: parentTask.repoUrl,
+    taskType: "review",
+    blocksParent: true,
     agentType: "claude-code",
   });
 
-  // Set the task type, parent link, and inherit priority
-  await db
-    .update(tasks)
-    .set({
-      parentTaskId: parentTask.id,
-      taskType: "review",
-      priority: Math.max(1, (parentTask.priority ?? 100) - 1), // Higher priority than parent
-    })
-    .where(eq(tasks.id, reviewTask.id));
+  const reviewTask = subtask;
 
   // Build the review prompt
   const reviewTemplate = repoConfig?.reviewPromptTemplate ?? DEFAULT_REVIEW_PROMPT_TEMPLATE;

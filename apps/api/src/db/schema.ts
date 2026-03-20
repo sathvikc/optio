@@ -50,6 +50,8 @@ export const tasks = pgTable("tasks", {
   priority: integer("priority").notNull().default(100), // lower = higher priority
   parentTaskId: uuid("parent_task_id"), // for review tasks linked to a coding task
   taskType: text("task_type").notNull().default("coding"), // "coding" | "review"
+  subtaskOrder: integer("subtask_order").default(0),  // ordering within parent's subtasks
+  blocksParent: boolean("blocks_parent").notNull().default(false),  // if true, parent waits for this
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   startedAt: timestamp("started_at", { withTimezone: true }),
