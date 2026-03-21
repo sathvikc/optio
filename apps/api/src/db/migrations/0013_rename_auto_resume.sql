@@ -1,0 +1,1 @@
+ALTER TABLE "repos" RENAME COLUMN "auto_resume_on_review" TO "auto_resume";

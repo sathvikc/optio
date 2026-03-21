@@ -43,7 +43,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
   const [claudeEffort, setClaudeEffort] = useState("high");
   const [maxTurnsCoding, setMaxTurnsCoding] = useState(250);
   const [maxTurnsReview, setMaxTurnsReview] = useState(10);
-  const [autoResumeOnReview, setAutoResumeOnReview] = useState(false);
+  const [autoResume, setAutoResume] = useState(false);
   const [maxConcurrentTasks, setMaxConcurrentTasks] = useState(2);
   const [reviewEnabled, setReviewEnabled] = useState(false);
   const [reviewTrigger, setReviewTrigger] = useState("on_ci_pass");
@@ -64,7 +64,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         setCustomDockerfile(r.customDockerfile ?? "");
         if (r.setupCommands || r.customDockerfile) setShowAdvanced(true);
         setAutoMerge(r.autoMerge);
-        setAutoResumeOnReview(r.autoResumeOnReview ?? false);
+        setAutoResume(r.autoResume ?? false);
         setMaxConcurrentTasks(r.maxConcurrentTasks ?? 2);
         setDefaultBranch(r.defaultBranch);
         setClaudeModel(r.claudeModel ?? "opus");
@@ -97,7 +97,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         setupCommands: setupCommands || undefined,
         customDockerfile: customDockerfile || null,
         autoMerge,
-        autoResumeOnReview: reviewEnabled ? autoResumeOnReview : false,
+        autoResume: reviewEnabled ? autoResume : false,
         maxConcurrentTasks,
         defaultBranch,
         promptTemplateOverride: useCustomPrompt ? promptOverride : null,
@@ -368,7 +368,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         {/* Stage 2: Resume on Feedback */}
         <PipelineStage
           number={2}
-          enabled={reviewEnabled && autoResumeOnReview}
+          enabled={reviewEnabled && autoResume}
           disabled={!reviewEnabled}
           label="Resume on Feedback"
         >
@@ -380,8 +380,8 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
           >
             <input
               type="checkbox"
-              checked={autoResumeOnReview}
-              onChange={(e) => setAutoResumeOnReview(e.target.checked)}
+              checked={autoResume}
+              onChange={(e) => setAutoResume(e.target.checked)}
               disabled={!reviewEnabled}
               className="w-4 h-4 rounded disabled:opacity-50"
             />

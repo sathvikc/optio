@@ -121,7 +121,7 @@ export const repos = pgTable("repos", {
   claudeEffort: text("claude_effort").default("high"), // "low", "medium", "high"
   maxTurnsCoding: integer("max_turns_coding"), // null = use global default (250)
   maxTurnsReview: integer("max_turns_review"), // null = use global default (10)
-  autoResumeOnReview: boolean("auto_resume_on_review").notNull().default(false),
+  autoResume: boolean("auto_resume").notNull().default(false),
   maxConcurrentTasks: integer("max_concurrent_tasks").notNull().default(2),
   reviewEnabled: boolean("review_enabled").notNull().default(false),
   reviewTrigger: text("review_trigger").default("on_ci_pass"), // "manual" | "on_pr" | "on_ci_pass"

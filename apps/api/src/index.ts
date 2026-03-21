@@ -1,10 +1,38 @@
 import "dotenv/config";
+import { Queue } from "bullmq";
 import { buildServer } from "./server.js";
 import { startTaskWorker, reconcileOrphanedTasks } from "./workers/task-worker.js";
 import { startTicketSyncWorker } from "./workers/ticket-sync-worker.js";
 import { startRepoCleanupWorker } from "./workers/repo-cleanup-worker.js";
 import { startPrWatcherWorker } from "./workers/pr-watcher-worker.js";
 import { logger } from "./logger.js";
+
+const redisConnection = {
+  url: process.env.REDIS_URL ?? "redis://localhost:6379",
+  maxRetriesPerRequest: null,
+};
+
+/**
+ * Remove all stale repeatable jobs from a queue before re-registering.
+ * Prevents duplicate/orphaned repeat jobs after server restarts.
+ */
+async function cleanRepeatJobs(queueName: string) {
+  const queue = new Queue(queueName, { connection: redisConnection });
+  try {
+    const repeatableJobs = await queue.getRepeatableJobs();
+    for (const job of repeatableJobs) {
+      await queue.removeRepeatableByKey(job.key);
+    }
+    if (repeatableJobs.length > 0) {
+      logger.info(
+        { queue: queueName, removed: repeatableJobs.length },
+        "Cleaned stale repeat jobs",
+      );
+    }
+  } finally {
+    await queue.close();
+  }
+}
 
 const PORT = parseInt(process.env.API_PORT ?? "4000", 10);
 const HOST = process.env.API_HOST ?? "0.0.0.0";
@@ -22,20 +50,24 @@ process.on("uncaughtException", (err) => {
 async function main() {
   const app = await buildServer();
 
-  // Start BullMQ worker
+  // Clean stale repeat jobs from previous server sessions
+  await Promise.all([
+    cleanRepeatJobs("pr-watcher"),
+    cleanRepeatJobs("repo-cleanup"),
+    cleanRepeatJobs("ticket-sync"),
+  ]);
+
+  // Start BullMQ workers (each re-registers its repeat job)
   const worker = startTaskWorker();
   logger.info("Task worker started");
 
-  // Start ticket sync worker
   const { syncAllTickets } = await import("./services/ticket-sync-service.js");
   const ticketSyncWorker = startTicketSyncWorker(syncAllTickets);
   logger.info("Ticket sync worker started");
 
-  // Start repo cleanup worker
   const repoCleanupWorker = startRepoCleanupWorker();
   logger.info("Repo cleanup worker started");
 
-  // Start PR watcher worker
   const prWatcherWorker = startPrWatcherWorker();
   logger.info("PR watcher worker started");
 

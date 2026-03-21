@@ -20,7 +20,7 @@ export interface RepoRecord {
   claudeEffort: string | null;
   maxTurnsCoding: number | null;
   maxTurnsReview: number | null;
-  autoResumeOnReview: boolean;
+  autoResume: boolean;
   maxConcurrentTasks: number;
   reviewEnabled: boolean;
   reviewTrigger: string | null;
@@ -88,7 +88,7 @@ export async function updateRepo(
     claudeEffort?: string;
     maxTurnsCoding?: number;
     maxTurnsReview?: number;
-    autoResumeOnReview?: boolean;
+    autoResume?: boolean;
     maxConcurrentTasks?: number;
     reviewEnabled?: boolean;
     reviewTrigger?: string;

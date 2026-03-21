@@ -13,6 +13,115 @@ const connectionOpts = {
   maxRetriesPerRequest: null,
 };
 
+/** Determine overall CI check status from GitHub check runs. */
+export function determineCheckStatus(
+  checkRuns: { status: string; conclusion: string | null }[],
+): "none" | "pending" | "passing" | "failing" {
+  if (checkRuns.length === 0) return "none";
+  const allComplete = checkRuns.every((r) => r.status === "completed");
+  const allSuccess = checkRuns.every(
+    (r) => r.conclusion === "success" || r.conclusion === "skipped",
+  );
+  if (!allComplete) return "pending";
+  if (allSuccess) return "passing";
+  return "failing";
+}
+
+/** Determine review status from GitHub PR reviews. */
+export function determineReviewStatus(reviews: { state: string; body?: string }[]): {
+  status: string;
+  comments: string;
+} {
+  if (reviews.length === 0) return { status: "none", comments: "" };
+  const substantive = reviews.filter((r) => r.state !== "COMMENTED" && r.state !== "DISMISSED");
+  const latest = substantive[substantive.length - 1];
+  if (latest) {
+    if (latest.state === "APPROVED") return { status: "approved", comments: "" };
+    if (latest.state === "CHANGES_REQUESTED")
+      return { status: "changes_requested", comments: latest.body || "" };
+  }
+  if (reviews.some((r) => r.state === "COMMENTED")) return { status: "pending", comments: "" };
+  return { status: "none", comments: "" };
+}
+
+/** Determine what action the PR watcher should take for a task. */
+export function determinePrAction(opts: {
+  prState: string;
+  prMerged: boolean;
+  mergeable: boolean | null;
+  checksStatus: string;
+  prevChecksStatus: string | null;
+  reviewStatus: string;
+  autoMerge: boolean;
+  autoResume: boolean;
+  reviewEnabled: boolean;
+  reviewTrigger: string;
+  hasReviewSubtask: boolean;
+  blockingSubtasksComplete: boolean;
+}): { action: string; detail?: string } {
+  // PR merged
+  if (opts.prMerged) return { action: "complete", detail: "pr_merged" };
+
+  // PR closed without merge
+  if (opts.prState === "closed") return { action: "fail", detail: "pr_closed" };
+
+  // Merge conflicts
+  if (
+    opts.mergeable === false &&
+    opts.prState === "open" &&
+    opts.prevChecksStatus !== "conflicts"
+  ) {
+    if (opts.autoResume) return { action: "resume_conflicts" };
+    return { action: "needs_attention", detail: "merge_conflicts" };
+  }
+
+  // CI just started failing
+  if (
+    opts.checksStatus === "failing" &&
+    opts.prevChecksStatus !== "failing" &&
+    opts.prState === "open"
+  ) {
+    if (opts.autoResume) return { action: "resume_ci_failure" };
+    return { action: "needs_attention", detail: "ci_failing" };
+  }
+
+  // CI just passed — trigger review if configured
+  if (
+    opts.checksStatus === "passing" &&
+    opts.prevChecksStatus !== "passing" &&
+    opts.prState === "open" &&
+    opts.reviewEnabled &&
+    opts.reviewTrigger === "on_ci_pass" &&
+    !opts.hasReviewSubtask
+  ) {
+    return { action: "launch_review" };
+  }
+
+  // First PR detection — trigger review on PR open if configured
+  if (
+    opts.prevChecksStatus === null &&
+    opts.prState === "open" &&
+    opts.reviewEnabled &&
+    opts.reviewTrigger === "on_pr" &&
+    !opts.hasReviewSubtask
+  ) {
+    return { action: "launch_review" };
+  }
+
+  // Auto-merge: CI passing + subtasks done + autoMerge enabled
+  if (opts.checksStatus === "passing" && opts.prState === "open" && opts.autoMerge) {
+    if (opts.blockingSubtasksComplete) return { action: "auto_merge" };
+  }
+
+  // Review changes requested
+  if (opts.reviewStatus === "changes_requested") {
+    if (opts.autoResume) return { action: "resume_review" };
+    return { action: "needs_attention", detail: "review_changes_requested" };
+  }
+
+  return { action: "none" };
+}
+
 export const prWatcherQueue = new Queue("pr-watcher", { connection: connectionOpts });
 
 export function startPrWatcherWorker() {
@@ -259,7 +368,7 @@ export function startPrWatcherWorker() {
               .from(repos)
               .where(eq(repos.repoUrl, task.repoUrl));
 
-            if (repoConfig?.autoResumeOnReview) {
+            if (repoConfig?.autoResume) {
               try {
                 await taskService.transitionTask(
                   task.id,
@@ -299,7 +408,7 @@ export function startPrWatcherWorker() {
               .from(repos)
               .where(eq(repos.repoUrl, task.repoUrl));
 
-            if (repoConfig?.autoResumeOnReview) {
+            if (repoConfig?.autoResume) {
               // Build a summary of which checks failed
               const failedChecks = (checksData.check_runs ?? [])
                 .filter((r: any) => r.conclusion === "failure")
@@ -364,7 +473,7 @@ export function startPrWatcherWorker() {
               .from(repos)
               .where(eq(repos.repoUrl, task.repoUrl));
 
-            if (repoConfig?.autoResumeOnReview) {
+            if (repoConfig?.autoResume) {
               // Auto-resume with review feedback
               try {
                 await taskService.transitionTask(

@@ -281,16 +281,21 @@ export function startTaskWorker() {
             .where(eq(tasks.id, taskId));
         }
 
-        if (result.prUrl && !isReviewTask) {
-          // Only coding tasks transition to pr_opened (reviews complete directly)
-          await taskService.updateTaskPr(taskId, result.prUrl);
+        // Check if a PR URL was detected during streaming (may not be in final result)
+        const taskAfterExec = await taskService.getTask(taskId);
+        const detectedPrUrl = result.prUrl || taskAfterExec?.prUrl;
+
+        if (detectedPrUrl && !isReviewTask) {
+          // PR exists — go to pr_opened regardless of exit code.
+          // The PR watcher will track CI status and handle merge/failure from here.
+          if (result.prUrl) await taskService.updateTaskPr(taskId, result.prUrl);
           await taskService.transitionTask(
             taskId,
             TaskState.PR_OPENED,
             "pr_detected",
-            result.prUrl,
+            detectedPrUrl,
           );
-          log.info({ prUrl: result.prUrl }, "PR opened");
+          log.info({ prUrl: detectedPrUrl }, "PR opened");
         } else if (result.success || isReviewTask) {
           await taskService.transitionTask(
             taskId,
