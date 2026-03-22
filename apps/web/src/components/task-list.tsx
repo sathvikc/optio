@@ -133,19 +133,19 @@ export function TaskList() {
         </div>
       ) : (
         <div className="space-y-8">
-          {/* Running */}
-          {running.length > 0 && (
-            <Section label="Running" count={running.length}>
-              {running.map((task) => (
+          {/* Needs human input — most important, shown first */}
+          {awaitingAction.length > 0 && (
+            <Section label="Needs Your Input" count={awaitingAction.length}>
+              {awaitingAction.map((task) => (
                 <TaskCard key={task.id} task={task} subtasks={reviewMap.get(task.id)} />
               ))}
             </Section>
           )}
 
-          {/* Needs human input */}
-          {awaitingAction.length > 0 && (
-            <Section label="Needs Your Input" count={awaitingAction.length}>
-              {awaitingAction.map((task) => (
+          {/* Running */}
+          {running.length > 0 && (
+            <Section label="Running" count={running.length}>
+              {running.map((task) => (
                 <TaskCard key={task.id} task={task} subtasks={reviewMap.get(task.id)} />
               ))}
             </Section>
