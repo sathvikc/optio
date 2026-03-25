@@ -1,36 +1,24 @@
-# Improve test coverage for critical paths
+# Add demo screenshot or GIF to README
 
-Improve test coverage for critical paths
+Add demo screenshot or GIF to README
 
 ## Description
 
-Current test coverage is estimated at 10-15%, focused on shared utilities. The core orchestration paths have zero tests.
+Add visual media (screenshot, GIF, or short video) to the README showing Optio in action. Most popular dev tools repos have visuals near the top that immediately communicate what the tool does.
 
-## What's tested today
+Suggested visuals:
 
-- State machine transitions (`state-machine.test.ts`)
-- Error classifier patterns (`error-classifier.test.ts`)
-- Prompt template rendering (`prompt-template.test.ts`)
-- Agent event parser (`agent-event-parser.test.ts`)
-- PR watcher decision logic (`pr-watcher-worker.test.ts`)
-
-## Critical untested paths (priority order)
-
-1. **Task worker** — the main orchestration loop: concurrency checks, pod provisioning, agent execution, result handling (~200+ lines of complex logic)
-2. **Repo pool service** — pod creation, worktree exec, cleanup (~150+ lines)
-3. **Secret encryption/decryption** — round-trip correctness
-4. **Review agent flow** — subtask creation, prompt rendering, completion callbacks
-5. **Subtask completion checks** — `onSubtaskComplete()` parent advancement logic
-6. **API routes** — at minimum: task CRUD, secrets CRUD, bulk operations
+- The dashboard with a few tasks in various states
+- A task detail view showing streaming logs
+- The repo/cluster management views
 
 ## Acceptance criteria
 
-- Task worker has unit tests covering: concurrency limiting, retry logic, state transitions on success/failure
-- Repo pool service has tests for pod lifecycle
-- Secret encryption has round-trip test
-- Overall coverage meaningfully improved (target: 40%+ of backend logic)
+- At least one screenshot or GIF near the top of README.md
+- Images stored in a `docs/` or `.github/` directory (not a third-party host)
+- Alt text included for accessibility
 
 ---
 
-_Optio Task ID: 52315170-01a9-460e-85fb-c6c57232046d_
-_Source: [github](https://github.com/jonwiggins/optio/issues/11)_
+_Optio Task ID: c519ec95-5d5c-4e95-98da-acfd27d5db77_
+_Source: [github](https://github.com/jonwiggins/optio/issues/6)_

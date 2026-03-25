@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" font-family="Inter, -apple-system, system-ui, sans-serif">
+  <defs>
+    <style>
+      .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+    </style>
+    <clipPath id="round-corners">
+      <rect width="1280" height="800" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#round-corners)">
+    <!-- Window chrome -->
+    <rect width="1280" height="800" fill="#0a0a0c"/>
+    <rect width="1280" height="36" fill="#111113"/>
+    <circle cx="20" cy="18" r="6" fill="#ef4444" opacity="0.8"/>
+    <circle cx="40" cy="18" r="6" fill="#f59e0b" opacity="0.8"/>
+    <circle cx="60" cy="18" r="6" fill="#22c55e" opacity="0.8"/>
+    <text x="640" y="23" text-anchor="middle" fill="#a1a1aa" font-size="12" font-weight="500">Optio — Repositories</text>
+
+    <!-- Sidebar -->
+    <rect x="0" y="36" width="240" height="764" fill="#111113"/>
+    <line x1="240" y1="36" x2="240" y2="800" stroke="#27272a" stroke-width="1"/>
+
+    <!-- Sidebar logo -->
+    <text x="52" y="76" fill="#6d28d9" font-size="14" font-weight="600">&#x26A1;</text>
+    <text x="68" y="76" fill="#fafafa" font-size="16" font-weight="600">Optio</text>
+    <text x="52" y="92" fill="#a1a1aa" font-size="10">Agent Orchestration</text>
+
+    <!-- Sidebar nav - Repos (active) -->
+    <text x="44" y="134" fill="#a1a1aa" font-size="13">Overview</text>
+    <text x="44" y="170" fill="#a1a1aa" font-size="13">Tasks</text>
+    <rect x="12" y="184" width="216" height="36" rx="8" fill="rgba(109,40,217,0.1)"/>
+    <rect x="12" y="184" width="2" height="36" rx="1" fill="#6d28d9"/>
+    <text x="44" y="206" fill="#fafafa" font-size="13" font-weight="500">Repos</text>
+    <text x="44" y="242" fill="#a1a1aa" font-size="13">Cluster</text>
+    <text x="44" y="278" fill="#a1a1aa" font-size="13">Costs</text>
+
+    <!-- Main content - Header -->
+    <text x="280" y="80" fill="#f4f4f5" font-size="24" font-weight="600" letter-spacing="-0.5">Repositories</text>
+    <text x="280" y="100" fill="#a1a1aa" font-size="13">4 repositories configured</text>
+
+    <!-- Add Repository button -->
+    <rect x="1100" y="60" width="140" height="36" rx="8" fill="#6d28d9"/>
+    <text x="1170" y="82" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="500">+ Add Repository</text>
+
+    <!-- Repo list -->
+    <!-- Repo 1 -->
+    <rect x="280" y="124" width="960" height="100" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <!-- Repo icon -->
+    <rect x="308" y="148" width="36" height="36" rx="8" fill="rgba(109,40,217,0.1)"/>
+    <text x="326" y="171" text-anchor="middle" fill="#6d28d9" font-size="16">&#x1F4C1;</text>
+
+    <text x="360" y="164" fill="#fafafa" font-size="15" font-weight="600">jonwiggins/optio</text>
+    <text x="520" y="164" fill="#71717a" font-size="11">&#x1F310; Public</text>
+
+    <!-- Tags row -->
+    <rect x="360" y="176" width="46" height="20" rx="4" fill="rgba(59,130,246,0.1)"/>
+    <text x="383" y="190" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="600" class="mono">node</text>
+
+    <rect x="414" y="176" width="56" height="20" rx="4" fill="rgba(34,197,94,0.1)"/>
+    <text x="442" y="190" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="500">auto-merge</text>
+
+    <rect x="478" y="176" width="52" height="20" rx="4" fill="rgba(109,40,217,0.1)"/>
+    <text x="504" y="190" text-anchor="middle" fill="#7c3aed" font-size="9" font-weight="500">review &#x2713;</text>
+
+    <text x="360" y="210" fill="#71717a" font-size="10">main &middot; sonnet &middot; 200k context &middot; 2 concurrent</text>
+
+    <!-- Active tasks indicator -->
+    <rect x="1100" y="152" width="80" height="22" rx="11" fill="rgba(109,40,217,0.1)"/>
+    <text x="1140" y="167" text-anchor="middle" fill="#6d28d9" font-size="10" font-weight="500">2 active</text>
+    <text x="1200" y="167" fill="#3f3f46" font-size="14">&#x276F;</text>
+
+    <!-- Repo 2 -->
+    <rect x="280" y="238" width="960" height="100" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <rect x="308" y="262" width="36" height="36" rx="8" fill="rgba(109,40,217,0.1)"/>
+    <text x="326" y="285" text-anchor="middle" fill="#6d28d9" font-size="16">&#x1F4C1;</text>
+
+    <text x="360" y="278" fill="#fafafa" font-size="15" font-weight="600">jonwiggins/webapp</text>
+    <text x="520" y="278" fill="#71717a" font-size="11">&#x1F512; Private</text>
+
+    <rect x="360" y="290" width="54" height="20" rx="4" fill="rgba(59,130,246,0.1)"/>
+    <text x="387" y="304" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="600" class="mono">python</text>
+
+    <rect x="422" y="290" width="52" height="20" rx="4" fill="rgba(109,40,217,0.1)"/>
+    <text x="448" y="304" text-anchor="middle" fill="#7c3aed" font-size="9" font-weight="500">review &#x2713;</text>
+
+    <text x="360" y="324" fill="#71717a" font-size="10">main &middot; opus &middot; 1M context &middot; 1 concurrent</text>
+
+    <rect x="1100" y="266" width="80" height="22" rx="11" fill="rgba(245,158,11,0.1)"/>
+    <text x="1140" y="281" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="500">1 attn</text>
+    <text x="1200" y="281" fill="#3f3f46" font-size="14">&#x276F;</text>
+
+    <!-- Repo 3 -->
+    <rect x="280" y="352" width="960" height="100" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <rect x="308" y="376" width="36" height="36" rx="8" fill="rgba(109,40,217,0.1)"/>
+    <text x="326" y="399" text-anchor="middle" fill="#6d28d9" font-size="16">&#x1F4C1;</text>
+
+    <text x="360" y="392" fill="#fafafa" font-size="15" font-weight="600">acme-corp/billing-service</text>
+    <text x="565" y="392" fill="#71717a" font-size="11">&#x1F512; Private</text>
+
+    <rect x="360" y="404" width="36" height="20" rx="4" fill="rgba(59,130,246,0.1)"/>
+    <text x="378" y="418" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="600" class="mono">go</text>
+
+    <rect x="404" y="404" width="56" height="20" rx="4" fill="rgba(34,197,94,0.1)"/>
+    <text x="432" y="418" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="500">auto-merge</text>
+
+    <text x="360" y="438" fill="#71717a" font-size="10">main &middot; sonnet &middot; 200k context &middot; 3 concurrent</text>
+
+    <rect x="1100" y="380" width="80" height="22" rx="11" fill="rgba(34,197,94,0.1)"/>
+    <text x="1140" y="395" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="500">1 PR</text>
+    <text x="1200" y="395" fill="#3f3f46" font-size="14">&#x276F;</text>
+
+    <!-- Repo 4 -->
+    <rect x="280" y="466" width="960" height="100" rx="12" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <rect x="308" y="490" width="36" height="36" rx="8" fill="rgba(109,40,217,0.1)"/>
+    <text x="326" y="513" text-anchor="middle" fill="#6d28d9" font-size="16">&#x1F4C1;</text>
+
+    <text x="360" y="506" fill="#fafafa" font-size="15" font-weight="600">acme-corp/frontend</text>
+    <text x="530" y="506" fill="#71717a" font-size="11">&#x1F512; Private</text>
+
+    <rect x="360" y="518" width="40" height="20" rx="4" fill="rgba(59,130,246,0.1)"/>
+    <text x="380" y="532" text-anchor="middle" fill="#3b82f6" font-size="9" font-weight="600" class="mono">full</text>
+
+    <text x="360" y="552" fill="#71717a" font-size="10">develop &middot; sonnet &middot; 200k context &middot; 2 concurrent</text>
+
+    <rect x="1100" y="494" width="80" height="22" rx="11" fill="rgba(59,130,246,0.1)"/>
+    <text x="1140" y="509" text-anchor="middle" fill="#3b82f6" font-size="10" font-weight="500">1 queued</text>
+    <text x="1200" y="509" fill="#3f3f46" font-size="14">&#x276F;</text>
+
+    <!-- Cluster Summary section -->
+    <text x="280" y="610" fill="#f4f4f5" font-size="15" font-weight="600">Active Pods</text>
+    <text x="375" y="610" fill="#a1a1aa" font-size="12">3 pods running</text>
+
+    <!-- Pod cards -->
+    <rect x="280" y="626" width="305" height="80" rx="10" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <circle cx="304" cy="650" r="5" fill="#22c55e"/>
+    <text x="318" y="654" fill="#fafafa" font-size="12" font-weight="500" class="mono">optio-repo-jonwiggins-optio</text>
+    <text x="318" y="672" fill="#a1a1aa" font-size="10">2 worktrees &middot; CPU 45% &middot; Mem 812Mi</text>
+    <text x="318" y="690" fill="#71717a" font-size="10">Up 34m &middot; 3 tasks processed</text>
+
+    <rect x="600" y="626" width="305" height="80" rx="10" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <circle cx="624" cy="650" r="5" fill="#22c55e"/>
+    <text x="638" y="654" fill="#fafafa" font-size="12" font-weight="500" class="mono">optio-repo-jonwiggins-webapp</text>
+    <text x="638" y="672" fill="#a1a1aa" font-size="10">1 worktree &middot; CPU 72% &middot; Mem 1.2Gi</text>
+    <text x="638" y="690" fill="#71717a" font-size="10">Up 12m &middot; 1 task processed</text>
+
+    <rect x="920" y="626" width="305" height="80" rx="10" fill="#18181b" stroke="#27272a" stroke-width="1"/>
+    <circle cx="944" cy="650" r="5" fill="#22c55e"/>
+    <text x="958" y="654" fill="#fafafa" font-size="12" font-weight="500" class="mono">optio-repo-acme-billing</text>
+    <text x="958" y="672" fill="#a1a1aa" font-size="10">1 worktree &middot; CPU 28% &middot; Mem 640Mi</text>
+    <text x="958" y="690" fill="#71717a" font-size="10">Up 22m &middot; 2 tasks processed</text>
+  </g>
+</svg>

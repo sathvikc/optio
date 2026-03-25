@@ -4,6 +4,23 @@ AI Agent Workflow Orchestration — run coding agents (Claude Code, OpenAI Codex
 
 Optio manages the full lifecycle: task intake → container provisioning → agent execution → PR creation → CI monitoring → merge. Agents run in isolated Kubernetes pods with git worktrees for efficient multi-task concurrency.
 
+## Demo
+
+<p align="center">
+  <img src="docs/screenshots/dashboard-overview.svg" alt="Optio dashboard showing task overview with running, queued, and completed tasks across repositories" width="100%"/>
+</p>
+<p align="center"><em>Dashboard overview — monitor all tasks at a glance with real-time status updates</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/task-detail-logs.svg" alt="Task detail view with live streaming logs showing agent reading files, writing code, and running type checks" width="100%"/>
+</p>
+<p align="center"><em>Task detail — live-streamed agent logs with tool calls, pipeline progress, and cost tracking</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/repo-management.svg" alt="Repository management view showing configured repos with image presets, review settings, and active pod status" width="100%"/>
+</p>
+<p align="center"><em>Repository management — per-repo agent settings, image presets, and active pod monitoring</em></p>
+
 ## Features
 
 - **Pod-per-repo architecture** — one long-lived pod per repository, tasks run in git worktrees for efficient multi-task concurrency
