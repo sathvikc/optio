@@ -398,6 +398,12 @@ export async function execTaskInRepoPod(
     `    print(f'  wrote {p}')`,
     `"`,
     `fi`,
+    // Exclude Optio runtime files from git tracking using the local exclude file
+    // (never committed, unlike .gitignore modifications)
+    `EXCLUDE_FILE="$(git rev-parse --git-dir)/info/exclude"`,
+    `mkdir -p "$(dirname "$EXCLUDE_FILE")"`,
+    `grep -qxF '.optio/' "$EXCLUDE_FILE" 2>/dev/null || echo '.optio/' >> "$EXCLUDE_FILE"`,
+    `grep -qxF '.optio-run-token' "$EXCLUDE_FILE" 2>/dev/null || echo '.optio-run-token' >> "$EXCLUDE_FILE"`,
     // EXIT trap: preserve the worktree — cleanup is handled by the cleanup worker
     // based on task state. Only clean up Claude Code's internal worktrees (-wt suffix).
     `trap 'cd /workspace/repo 2>/dev/null; git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true; git worktree prune 2>/dev/null || true' EXIT`,
