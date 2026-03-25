@@ -23,7 +23,7 @@ function encryptionKey(): Buffer {
   return _encryptionKey;
 }
 
-function encrypt(plaintext: string): { encrypted: Buffer; iv: Buffer; authTag: Buffer } {
+export function encrypt(plaintext: string): { encrypted: Buffer; iv: Buffer; authTag: Buffer } {
   const key = encryptionKey();
   const iv = randomBytes(16);
   const cipher = createCipheriv(ALGORITHM, key, iv);
@@ -32,7 +32,7 @@ function encrypt(plaintext: string): { encrypted: Buffer; iv: Buffer; authTag: B
   return { encrypted, iv, authTag };
 }
 
-function decrypt(encrypted: Buffer, iv: Buffer, authTag: Buffer): string {
+export function decrypt(encrypted: Buffer, iv: Buffer, authTag: Buffer): string {
   const key = encryptionKey();
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
