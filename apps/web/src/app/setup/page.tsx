@@ -139,7 +139,7 @@ export default function SetupPage() {
     claudeAuthMode === "max-subscription"
       ? subscriptionAvailable
       : claudeAuthMode === "oauth-token"
-        ? oauthTokenValidated
+        ? oauthToken.trim().length > 0
         : anthropicValidated;
 
   const currentStep = STEPS[step];
