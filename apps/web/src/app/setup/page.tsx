@@ -63,13 +63,11 @@ export default function SetupPage() {
   const [openaiError, setOpenaiError] = useState("");
 
   // Step 3: Claude auth mode
-  const [claudeAuthMode, setClaudeAuthMode] = useState<
-    "api-key" | "max-subscription" | "oauth-token"
-  >("api-key");
-  const [subscriptionAvailable, setSubscriptionAvailable] = useState(false);
-  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [claudeAuthMode, setClaudeAuthMode] = useState<"api-key" | "oauth-token">("oauth-token");
   const [oauthToken, setOauthToken] = useState("");
-  const [oauthTokenValidated, setOauthTokenValidated] = useState(false);
+  const [oauthTokenDetected, setOauthTokenDetected] = useState(false);
+  const [oauthChecking, setOauthChecking] = useState(false);
+  const [showManualPaste, setShowManualPaste] = useState(false);
 
   // Step 4: Repos
   const [repos, setRepos] = useState<RepoEntry[]>([]);
@@ -105,10 +103,10 @@ export default function SetupPage() {
       .catch(() => setRuntimeHealthy(false));
   }, []);
 
-  // Check subscription availability when reaching the agents step
+  // Check if OAuth token is already stored when reaching the agents step
   useEffect(() => {
     if (step === 2) {
-      checkSubscription();
+      checkOauthToken();
     }
   }, [step]);
 
@@ -136,11 +134,9 @@ export default function SetupPage() {
   }, [step]);
 
   const claudeReady =
-    claudeAuthMode === "max-subscription"
-      ? subscriptionAvailable
-      : claudeAuthMode === "oauth-token"
-        ? oauthToken.trim().length > 0
-        : anthropicValidated;
+    claudeAuthMode === "oauth-token"
+      ? oauthTokenDetected || oauthToken.trim().length > 0
+      : anthropicValidated;
 
   const currentStep = STEPS[step];
 
@@ -203,18 +199,16 @@ export default function SetupPage() {
     setLoading(false);
   };
 
-  const checkSubscription = async () => {
-    setSubscriptionLoading(true);
+  const checkOauthToken = async () => {
+    setOauthChecking(true);
     try {
       const res = await api.getAuthStatus();
-      setSubscriptionAvailable(res.subscription.available);
       if (res.subscription.available) {
-        setClaudeAuthMode("max-subscription");
+        setOauthTokenDetected(true);
+        setClaudeAuthMode("oauth-token");
       }
-    } catch {
-      setSubscriptionAvailable(false);
-    }
-    setSubscriptionLoading(false);
+    } catch {}
+    setOauthChecking(false);
   };
 
   const validateRepo = async (index: number) => {
@@ -518,8 +512,7 @@ export default function SetupPage() {
               <div className="p-4 rounded-md bg-bg border border-border space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Claude Code</span>
-                  {(claudeAuthMode === "max-subscription" && subscriptionAvailable) ||
-                  anthropicValidated ? (
+                  {claudeReady ? (
                     <span className="text-success text-xs flex items-center gap-1">
                       <CheckCircle className="w-3 h-3" /> Ready
                     </span>
@@ -528,70 +521,6 @@ export default function SetupPage() {
 
                 {/* Auth mode selector */}
                 <div className="space-y-2">
-                  <label
-                    className={cn(
-                      "flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors",
-                      claudeAuthMode === "max-subscription"
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:border-text-muted",
-                    )}
-                  >
-                    <input
-                      type="radio"
-                      name="claude-auth"
-                      checked={claudeAuthMode === "max-subscription"}
-                      onChange={() => setClaudeAuthMode("max-subscription")}
-                      className="mt-0.5"
-                    />
-                    <div className="flex-1">
-                      <span className="text-sm font-medium">Use Max/Pro subscription</span>
-                      <p className="text-xs text-text-muted mt-0.5">
-                        Reads your Claude login from this machine's Keychain. The OAuth token is
-                        passed to agent containers via{" "}
-                        <code className="text-primary">CLAUDE_CODE_OAUTH_TOKEN</code>. No API key
-                        costs — uses your existing subscription.
-                      </p>
-                      {claudeAuthMode === "max-subscription" && (
-                        <div className="mt-2">
-                          {subscriptionLoading ? (
-                            <span className="text-xs text-text-muted flex items-center gap-1">
-                              <Loader2 className="w-3 h-3 animate-spin" /> Checking local login...
-                            </span>
-                          ) : subscriptionAvailable ? (
-                            <span className="text-xs text-success flex items-center gap-1">
-                              <CheckCircle className="w-3 h-3" /> Claude subscription detected on
-                              this machine
-                            </span>
-                          ) : (
-                            <div className="text-xs space-y-1.5">
-                              <span className="flex items-center gap-1 text-warning">
-                                <AlertCircle className="w-3 h-3" /> No subscription found on this
-                                machine
-                              </span>
-                              <p className="text-text-muted">
-                                Run{" "}
-                                <code className="px-1 py-0.5 bg-bg-card rounded text-primary">
-                                  claude
-                                </code>{" "}
-                                in a terminal and log in first, or run{" "}
-                                <code className="px-1 py-0.5 bg-bg-card rounded text-primary">
-                                  claude setup-token
-                                </code>{" "}
-                                to generate a long-lived token (valid 1 year) for headless use.
-                              </p>
-                              <button
-                                onClick={checkSubscription}
-                                className="px-2 py-1 rounded bg-bg-hover text-text-muted hover:text-text text-xs"
-                              >
-                                Recheck
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </label>
-
                   <label
                     className={cn(
                       "flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors",
@@ -608,51 +537,95 @@ export default function SetupPage() {
                       className="mt-0.5"
                     />
                     <div className="flex-1">
-                      <span className="text-sm font-medium">
-                        Paste OAuth token (Max/Pro subscription)
-                      </span>
+                      <span className="text-sm font-medium">Use Max/Pro subscription</span>
                       <p className="text-xs text-text-muted mt-0.5">
-                        Generate a long-lived token with{" "}
-                        <code className="px-1 py-0.5 bg-bg-card rounded text-primary">
-                          claude setup-token
-                        </code>{" "}
-                        on any machine where you&apos;re logged into Claude Code, then paste it
-                        here. Uses your existing subscription — no API key costs.
+                        Uses your existing Claude subscription — no API key costs. Run the command
+                        below to copy your token, then paste it here.
                       </p>
                       {claudeAuthMode === "oauth-token" && (
-                        <div className="mt-2 space-y-2">
-                          <div className="flex gap-2">
-                            <input
-                              type="password"
-                              value={oauthToken}
-                              onChange={(e) => {
-                                setOauthToken(e.target.value);
-                                setOauthTokenValidated(false);
-                              }}
-                              onPaste={(e) => {
-                                const pasted = e.clipboardData.getData("text").trim();
-                                if (pasted) {
-                                  setOauthToken(pasted);
-                                  setOauthTokenValidated(true);
-                                }
-                              }}
-                              placeholder="Paste token from claude setup-token"
-                              className="flex-1 px-3 py-2 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary font-mono"
-                            />
-                          </div>
-                          {oauthTokenValidated && (
-                            <span className="text-xs text-success flex items-center gap-1">
-                              <Check className="w-3 h-3" /> Token saved
+                        <div className="mt-3 space-y-3">
+                          {oauthChecking ? (
+                            <span className="text-xs text-text-muted flex items-center gap-1">
+                              <Loader2 className="w-3 h-3 animate-spin" /> Checking for existing
+                              token...
                             </span>
+                          ) : oauthTokenDetected ? (
+                            <span className="text-xs text-success flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" /> Claude subscription token detected
+                            </span>
+                          ) : (
+                            <>
+                              <div>
+                                <p className="text-xs text-text-muted mb-1.5">
+                                  Run this in a terminal to copy your token:
+                                </p>
+                                <div className="relative group">
+                                  <pre className="text-[11px] font-mono bg-bg-card border border-border rounded-md px-3 py-2.5 overflow-x-auto select-all whitespace-pre-wrap break-all">
+                                    {`security find-generic-password -s "Claude Code-credentials" -w | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])" | pbcopy`}
+                                  </pre>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(
+                                        `security find-generic-password -s "Claude Code-credentials" -w | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])" | pbcopy`,
+                                      );
+                                      toast.success("Command copied to clipboard");
+                                    }}
+                                    className="absolute top-1.5 right-1.5 px-2 py-1 rounded bg-bg-hover text-text-muted hover:text-text text-[10px] opacity-0 group-hover:opacity-100 transition-opacity"
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                              </div>
+                              <div>
+                                <p className="text-xs text-text-muted mb-1.5">
+                                  Then paste the token here:
+                                </p>
+                                <input
+                                  type="password"
+                                  value={oauthToken}
+                                  onChange={(e) => setOauthToken(e.target.value)}
+                                  placeholder="Paste token here"
+                                  className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary font-mono"
+                                />
+                              </div>
+                              {oauthToken.trim().length > 0 && (
+                                <span className="text-xs text-success flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> Token ready
+                                </span>
+                              )}
+                              {!showManualPaste && (
+                                <p className="text-[10px] text-text-muted">
+                                  Not on macOS?{" "}
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowManualPaste(true)}
+                                    className="text-primary hover:underline"
+                                  >
+                                    See alternative methods
+                                  </button>
+                                </p>
+                              )}
+                              {showManualPaste && (
+                                <div className="text-[10px] text-text-muted space-y-1 border-t border-border pt-2">
+                                  <p>
+                                    <strong>Linux:</strong> Check{" "}
+                                    <code className="px-1 py-0.5 bg-bg-card rounded text-primary">
+                                      ~/.claude/.credentials.json
+                                    </code>{" "}
+                                    for <code>claudeAiOauth.accessToken</code>
+                                  </p>
+                                  <p>
+                                    <strong>Any platform:</strong> Run{" "}
+                                    <code className="px-1 py-0.5 bg-bg-card rounded text-primary">
+                                      claude setup-token
+                                    </code>{" "}
+                                    (note: usage charts may not work with this method)
+                                  </p>
+                                </div>
+                              )}
+                            </>
                           )}
-                          <p className="text-[10px] text-text-muted">
-                            Run{" "}
-                            <code className="px-1 py-0.5 bg-bg-card rounded text-primary">
-                              claude setup-token
-                            </code>{" "}
-                            in a terminal on any machine where you&apos;re logged in. The token is
-                            valid for 1 year.
-                          </p>
                         </div>
                       )}
                     </div>
@@ -1151,11 +1124,7 @@ export default function SetupPage() {
                     <CheckCircle className="w-4 h-4 text-success" />
                     <span>
                       Claude Code:{" "}
-                      {claudeAuthMode === "max-subscription"
-                        ? "Max subscription"
-                        : claudeAuthMode === "oauth-token"
-                          ? "OAuth token"
-                          : "API key"}
+                      {claudeAuthMode === "oauth-token" ? "Max/Pro subscription" : "API key"}
                     </span>
                   </div>
                 )}
