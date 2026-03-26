@@ -203,7 +203,7 @@ export function ActivityFeed({ taskId }: { taskId: string }) {
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => handleUpdate(item.id)}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded bg-primary text-white text-xs hover:bg-primary-hover"
+                        className="flex items-center gap-1 px-2 py-0.5 rounded bg-primary text-white text-xs hover:bg-primary-hover btn-press transition-all"
                       >
                         <Check className="w-3 h-3" />
                         Save
@@ -246,7 +246,7 @@ export function ActivityFeed({ taskId }: { taskId: string }) {
           <button
             onClick={handleAddComment}
             disabled={!newComment.trim() || submitting}
-            className="self-end px-3 py-1.5 rounded-md bg-primary text-white text-xs hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+            className="self-end px-3 py-1.5 rounded-md bg-primary text-white text-xs hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed btn-press transition-all"
           >
             {submitting ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
