@@ -22,6 +22,11 @@ vi.mock("../db/schema.js", () => ({
   },
   repos: {
     repoUrl: "repos.repo_url",
+    workspaceId: "repos.workspace_id",
+  },
+  workspaces: {
+    id: "workspaces.id",
+    slug: "workspaces.slug",
   },
 }));
 
@@ -468,7 +473,11 @@ describe("subtask-service", () => {
               return Promise.resolve([{ id: "review-1", state: "completed", taskType: "review" }]);
             }
             if (selectCallCount === 3) {
-              // repo config query
+              // getDefaultWorkspaceId — no default workspace in test
+              return Promise.resolve([]);
+            }
+            if (selectCallCount === 4) {
+              // getRepoByUrl isNull fallback — repo config query
               return Promise.resolve([{ autoMerge: true }]);
             }
             return Promise.resolve([]);
@@ -536,6 +545,11 @@ describe("subtask-service", () => {
               return Promise.resolve([{ id: "review-1", state: "completed", taskType: "review" }]);
             }
             if (selectCallCount === 3) {
+              // getDefaultWorkspaceId — no default workspace in test
+              return Promise.resolve([]);
+            }
+            if (selectCallCount === 4) {
+              // getRepoByUrl isNull fallback — repo config query
               return Promise.resolve([{ autoMerge: true }]);
             }
             return Promise.resolve([]);
@@ -586,7 +600,11 @@ describe("subtask-service", () => {
               return Promise.resolve([{ id: "review-1", state: "completed", taskType: "review" }]);
             }
             if (selectCallCount === 3) {
-              // autoMerge is false
+              // getDefaultWorkspaceId — no default workspace in test
+              return Promise.resolve([]);
+            }
+            if (selectCallCount === 4) {
+              // getRepoByUrl isNull fallback — autoMerge is false
               return Promise.resolve([{ autoMerge: false }]);
             }
             return Promise.resolve([]);

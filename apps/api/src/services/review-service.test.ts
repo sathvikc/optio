@@ -16,7 +16,8 @@ vi.mock("../db/client.js", () => ({
 }));
 
 vi.mock("../db/schema.js", () => ({
-  repos: { repoUrl: "repoUrl" },
+  repos: { repoUrl: "repoUrl", workspaceId: "workspaceId" },
+  workspaces: { id: "id", slug: "slug" },
   tasks: {},
   taskEvents: {},
   taskLogs: {},
@@ -98,10 +99,12 @@ describe("launchReview", () => {
 
     mockGetTask.mockResolvedValueOnce(parentTask);
 
-    // Repo config query
-    vi.mocked(db.select().from(undefined as any).where as any).mockResolvedValueOnce([
-      { reviewPromptTemplate: null, testCommand: "npm test", reviewModel: "haiku" },
-    ]);
+    // Repo config query (first call is getDefaultWorkspaceId, second is the repo lookup)
+    vi.mocked(db.select().from(undefined as any).where as any)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { reviewPromptTemplate: null, testCommand: "npm test", reviewModel: "haiku" },
+      ]);
 
     const reviewSubtask = { id: "review-1", title: "Review: Implement feature X" };
     mockCreateSubtask.mockResolvedValueOnce(reviewSubtask);
@@ -154,8 +157,10 @@ describe("launchReview", () => {
 
     mockGetTask.mockResolvedValueOnce(parentTask);
 
-    // No repo config
-    vi.mocked(db.select().from(undefined as any).where as any).mockResolvedValueOnce([]);
+    // No repo config (first call is getDefaultWorkspaceId, second is the repo lookup)
+    vi.mocked(db.select().from(undefined as any).where as any)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
 
     mockCreateSubtask.mockResolvedValueOnce({ id: "review-2" });
     mockTransitionTask.mockResolvedValueOnce({ id: "review-2", state: "queued" });
@@ -184,7 +189,9 @@ describe("launchReview", () => {
     };
 
     mockGetTask.mockResolvedValueOnce(parentTask);
-    vi.mocked(db.select().from(undefined as any).where as any).mockResolvedValueOnce([]);
+    vi.mocked(db.select().from(undefined as any).where as any)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
 
     mockCreateSubtask.mockResolvedValueOnce({ id: "review-3" });
     mockTransitionTask.mockResolvedValueOnce({ id: "review-3" });

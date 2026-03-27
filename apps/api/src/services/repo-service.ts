@@ -1,6 +1,6 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { repos } from "../db/schema.js";
+import { repos, workspaces } from "../db/schema.js";
 import { normalizeRepoUrl } from "@optio/shared";
 
 export interface RepoRecord {
@@ -55,13 +55,35 @@ export async function getRepo(id: string): Promise<RepoRecord | null> {
   return (repo as RepoRecord) ?? null;
 }
 
+async function getDefaultWorkspaceId(): Promise<string | null> {
+  const [ws] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.slug, "default"));
+  return ws?.id ?? null;
+}
+
 export async function getRepoByUrl(
   repoUrl: string,
   workspaceId?: string | null,
 ): Promise<RepoRecord | null> {
   const normalized = normalizeRepoUrl(repoUrl);
   const conditions = [eq(repos.repoUrl, normalized)];
-  if (workspaceId) conditions.push(eq(repos.workspaceId, workspaceId));
+  if (workspaceId) {
+    conditions.push(eq(repos.workspaceId, workspaceId));
+  } else {
+    // When no workspace is specified, try the default workspace first,
+    // then fall back to any repo with a NULL workspace_id
+    const defaultWsId = await getDefaultWorkspaceId();
+    if (defaultWsId) {
+      const [repo] = await db
+        .select()
+        .from(repos)
+        .where(and(eq(repos.repoUrl, normalized), eq(repos.workspaceId, defaultWsId)));
+      if (repo) return repo as RepoRecord;
+    }
+    conditions.push(isNull(repos.workspaceId));
+  }
   const [repo] = await db
     .select()
     .from(repos)
@@ -76,6 +98,10 @@ export async function createRepo(data: {
   isPrivate?: boolean;
   workspaceId?: string | null;
 }): Promise<RepoRecord> {
+  // Ensure repos always have a workspace assigned — prevents NULL workspace_id
+  // rows which bypass the (repo_url, workspace_id) unique constraint
+  const workspaceId = data.workspaceId || (await getDefaultWorkspaceId()) || undefined;
+
   const [repo] = await db
     .insert(repos)
     .values({
@@ -83,7 +109,7 @@ export async function createRepo(data: {
       fullName: data.fullName,
       defaultBranch: data.defaultBranch ?? "main",
       isPrivate: data.isPrivate ?? false,
-      workspaceId: data.workspaceId ?? undefined,
+      workspaceId,
     })
     .onConflictDoUpdate({
       target: [repos.repoUrl, repos.workspaceId],
