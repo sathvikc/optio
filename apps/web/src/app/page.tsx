@@ -37,6 +37,9 @@ import {
   Bot,
   Terminal,
   CircleDot,
+  GitMerge,
+  Eye,
+  ListChecks,
 } from "lucide-react";
 import { StateBadge } from "@/components/state-badge";
 
@@ -85,11 +88,13 @@ function formatK8sResource(value: string | undefined): string {
 
 interface TaskStats {
   total: number;
+  queued: number;
   running: number;
+  ci: number;
+  review: number;
   needsAttention: number;
-  prOpened: number;
-  completed: number;
   failed: number;
+  completed: number;
 }
 
 export default function OverviewPage() {
@@ -136,13 +141,24 @@ export default function OverviewPage() {
         setActiveSessions(sessionsRes.sessions);
         setActiveSessionCount(sessionsRes.activeCount);
         const tasks = tasksRes.tasks;
+        const prOpenedTasks = tasks.filter((t: any) => t.state === "pr_opened");
+        const ciCount = prOpenedTasks.filter((t: any) => {
+          const checks = t.prChecksStatus;
+          const review = t.prReviewStatus;
+          if (review && !["none", "pending"].includes(review)) return false;
+          return !checks || ["none", "pending", "failing"].includes(checks);
+        }).length;
+        const reviewCount = prOpenedTasks.length - ciCount;
         setTaskStats({
           total: tasks.length,
+          queued: tasks.filter((t: any) => ["pending", "queued", "provisioning"].includes(t.state))
+            .length,
           running: tasks.filter((t: any) => t.state === "running").length,
+          ci: ciCount,
+          review: reviewCount,
           needsAttention: tasks.filter((t: any) => t.state === "needs_attention").length,
-          prOpened: tasks.filter((t: any) => t.state === "pr_opened").length,
-          completed: tasks.filter((t: any) => t.state === "completed").length,
           failed: tasks.filter((t: any) => t.state === "failed").length,
+          completed: tasks.filter((t: any) => t.state === "completed").length,
         });
         setRecentTasks(tasks.slice(0, 5));
         setRepoCount(reposRes.repos.length);
@@ -284,40 +300,56 @@ export default function OverviewPage() {
         </button>
       </div>
 
-      <StaggerList className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StaggerItem>
-          <StatCard
+      <Link href="/tasks" className="block">
+        <div className="rounded-md border border-border bg-bg-card px-6 py-5 flex flex-wrap justify-around items-center gap-y-4 card-hover cursor-pointer">
+          <PipelineStat
+            icon={ListChecks}
+            label="Queue"
+            value={taskStats?.queued ?? 0}
+            color="text-text-muted"
+          />
+          <PipelineArrow />
+          <PipelineStat
             icon={Activity}
             label="Running"
             value={taskStats?.running ?? 0}
             color="text-primary"
+            active={!!taskStats?.running}
           />
-        </StaggerItem>
-        <StaggerItem>
-          <StatCard
+          <PipelineArrow />
+          <PipelineStat icon={GitMerge} label="CI" value={taskStats?.ci ?? 0} color="text-info" />
+          <PipelineArrow />
+          <PipelineStat
+            icon={Eye}
+            label="Review"
+            value={taskStats?.review ?? 0}
+            color="text-info"
+          />
+          <PipelineArrow />
+          <PipelineStat
             icon={AlertTriangle}
             label="Attention"
             value={taskStats?.needsAttention ?? 0}
             color="text-warning"
+            active={!!taskStats?.needsAttention}
           />
-        </StaggerItem>
-        <StaggerItem>
-          <StatCard
-            icon={GitPullRequest}
-            label="PRs Open"
-            value={taskStats?.prOpened ?? 0}
-            color="text-success"
+          <PipelineArrow />
+          <PipelineStat
+            icon={AlertTriangle}
+            label="Failed"
+            value={taskStats?.failed ?? 0}
+            color="text-error"
+            active={!!taskStats?.failed}
           />
-        </StaggerItem>
-        <StaggerItem>
-          <StatCard
+          <PipelineArrow />
+          <PipelineStat
             icon={CheckCircle}
-            label="Completed"
+            label="Done"
             value={taskStats?.completed ?? 0}
             color="text-success"
           />
-        </StaggerItem>
-      </StaggerList>
+        </div>
+      </Link>
 
       {usage?.available && (
         <div className="rounded-xl border border-border/50 bg-bg-card p-4">
@@ -1027,6 +1059,45 @@ function StatCard({
       </div>
     </div>
   );
+}
+
+function PipelineStat({
+  icon: Icon,
+  label,
+  value,
+  color,
+  active,
+}: {
+  icon: any;
+  label: string;
+  value: number;
+  color: string;
+  active?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-center gap-1.5 px-4 py-2 rounded-lg",
+        active && "bg-bg-hover/60",
+      )}
+    >
+      <span
+        className={cn("text-4xl font-bold tabular-nums", value > 0 ? color : "text-text-muted/30")}
+      >
+        {value}
+      </span>
+      <div className="flex items-center gap-1.5">
+        <Icon className={cn("w-3.5 h-3.5 shrink-0", value > 0 ? color : "text-text-muted/25")} />
+        <span className="text-xs text-text-muted/60 font-medium uppercase tracking-wider">
+          {label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PipelineArrow() {
+  return <span className="text-text-muted/20 text-lg self-center px-1">›</span>;
 }
 
 function UsageMeter({
