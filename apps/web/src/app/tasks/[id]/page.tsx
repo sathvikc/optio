@@ -366,7 +366,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
 
       {/* Error panel */}
       {task.errorMessage &&
-        isTerminal &&
+        (isTerminal || task.state === "needs_attention" || task.state === "pr_opened") &&
         (() => {
           const classified = classifyError(task.errorMessage);
           return (

@@ -80,11 +80,27 @@ export function useDashboardData() {
       .finally(() => setLoading(false));
   }, []);
 
-  const refreshUsage = useCallback(() => {
-    api
-      .getUsage()
-      .then((res) => setUsage(res.usage))
-      .catch(() => {});
+  const refreshUsage = useCallback(async () => {
+    try {
+      const res = await api.getUsage();
+      if (!res.usage.available && !res.usage.error) {
+        // Usage unavailable without error — check if token is expired
+        const authRes = await api.getAuthStatus().catch(() => null);
+        if (authRes?.subscription.expired) {
+          setUsage({ available: false, error: "OAuth token has expired" });
+          return;
+        }
+      }
+      setUsage(res.usage);
+    } catch {
+      // If usage endpoint itself fails, check auth status
+      try {
+        const authRes = await api.getAuthStatus();
+        if (authRes.subscription.expired) {
+          setUsage({ available: false, error: "OAuth token has expired" });
+        }
+      } catch {}
+    }
   }, []);
 
   useEffect(() => {

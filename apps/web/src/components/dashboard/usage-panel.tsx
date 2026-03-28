@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { Gauge, Clock, Moon, AlertTriangle } from "lucide-react";
+import { Gauge, Clock, Moon } from "lucide-react";
 import { getOffPeakInfo } from "@optio/shared";
+import { TokenRefreshBanner } from "@/components/token-refresh-banner";
 import type { UsageData } from "./types.js";
 
 function UsageMeter({
@@ -60,28 +60,9 @@ export function UsagePanel({ usage }: { usage: UsageData | null }) {
   if (!usage) return null;
 
   if (!usage.available) {
-    // Show auth warning if the token is expired/missing
     const isAuthError = usage.error?.includes("401") || usage.error?.includes("expired");
     if (!isAuthError) return null;
-    return (
-      <div className="rounded-xl border border-warning/30 bg-warning/5 p-4">
-        <div className="flex items-center gap-3">
-          <AlertTriangle className="w-4 h-4 text-warning shrink-0" />
-          <div className="flex-1">
-            <span className="text-sm font-medium text-text-heading">OAuth token expired</span>
-            <p className="text-xs text-text-muted mt-0.5">
-              Tasks will fail until a new token is provided.
-            </p>
-          </div>
-          <Link
-            href="/setup"
-            className="px-3 py-1.5 rounded-md bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors shrink-0"
-          >
-            Update Token
-          </Link>
-        </div>
-      </div>
-    );
+    return <TokenRefreshBanner />;
   }
 
   return (
