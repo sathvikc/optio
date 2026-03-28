@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-// Use a server-only env var so it's read at runtime, not baked in at build time.
-// Falls back to the build-time NEXT_PUBLIC_ var for local dev convenience.
-const INTERNAL_API_URL =
-  process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? "http://localhost:4000";
 const SESSION_COOKIE_NAME = "optio_session";
 
 /**

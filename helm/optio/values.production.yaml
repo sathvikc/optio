@@ -8,8 +8,7 @@
 #     --set auth.github.clientSecret=<secret> \
 #     --set externalDatabase.url=<postgres-url> \
 #     --set externalRedis.url=<redis-url> \
-#     --set publicUrl.api=https://optio-api.example.com \
-#     --set publicUrl.web=https://optio.example.com
+#     --set publicUrl=https://optio.example.com
 #
 # Generate encryption key: openssl rand -hex 32
 

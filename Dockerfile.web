@@ -25,14 +25,6 @@ COPY apps/web/ apps/web/
 # Build shared packages then web
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# NEXT_PUBLIC_* vars are baked in at build time
-ARG NEXT_PUBLIC_API_URL=http://localhost:30400
-ARG NEXT_PUBLIC_WS_URL=ws://localhost:30400
-ARG NEXT_PUBLIC_AUTH_DISABLED=true
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
-ENV NEXT_PUBLIC_AUTH_DISABLED=$NEXT_PUBLIC_AUTH_DISABLED
-
 RUN pnpm turbo build --filter=@optio/shared
 RUN cd apps/web && npx next build
 

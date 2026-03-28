@@ -186,18 +186,17 @@ externalRedis:
   url: ""  # e.g., redis://host:6379
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Public URLs
-# REQUIRED when auth is enabled. Set to the externally-reachable URLs of the
-# API and web services. Used for OAuth callbacks and cross-origin cookies.
+# Public URL
+# REQUIRED when auth is enabled. The externally-reachable URL where both web
+# and API are served (same origin via ingress path routing).
+# Used for OAuth callbacks, Slack links, etc.
 # ──────────────────────────────────────────────────────────────────────────────
-publicUrl:
-  api: ""   # e.g. https://optio.example.com or http://localhost:30400
-  web: ""   # e.g. https://optio.example.com or http://localhost:30310
+publicUrl: ""  # e.g. https://optio.example.com
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Authentication
 # When auth.disabled=false (the default), at least one OAuth provider and
-# publicUrl.api/web are REQUIRED.
+# publicUrl are REQUIRED.
 # ──────────────────────────────────────────────────────────────────────────────
 auth:
   # Set to true to disable authentication (NOT recommended for production).

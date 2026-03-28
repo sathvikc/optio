@@ -85,20 +85,37 @@ export class WsClient {
   }
 }
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000";
+/**
+ * Derive the WebSocket base URL at runtime.
+ *
+ * Priority:
+ * 1. NEXT_PUBLIC_WS_URL env var (local dev override via .env.local)
+ * 2. Derived from the current page URL (production — zero config)
+ * 3. SSR fallback
+ */
+export function getWsBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    return process.env.NEXT_PUBLIC_WS_URL;
+  }
+  if (typeof window === "undefined") {
+    return "ws://localhost:4000";
+  }
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}`;
+}
 
 export function createEventsClient(tokenProvider?: TokenProvider): WsClient {
-  return new WsClient(`${WS_URL}/ws/events`, tokenProvider);
+  return new WsClient(`${getWsBaseUrl()}/ws/events`, tokenProvider);
 }
 
 export function createLogClient(taskId: string, tokenProvider?: TokenProvider): WsClient {
-  return new WsClient(`${WS_URL}/ws/logs/${taskId}`, tokenProvider);
+  return new WsClient(`${getWsBaseUrl()}/ws/logs/${taskId}`, tokenProvider);
 }
 
 export function createTerminalClient(taskId: string, tokenProvider?: TokenProvider): WsClient {
-  return new WsClient(`${WS_URL}/ws/terminal/${taskId}`, tokenProvider);
+  return new WsClient(`${getWsBaseUrl()}/ws/terminal/${taskId}`, tokenProvider);
 }
 
 export function createSessionTerminalClient(sessionId: string): WsClient {
-  return new WsClient(`${WS_URL}/ws/sessions/${sessionId}/terminal`);
+  return new WsClient(`${getWsBaseUrl()}/ws/sessions/${sessionId}/terminal`);
 }

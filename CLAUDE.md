@@ -208,7 +208,7 @@ Enable a provider by setting both `<PROVIDER>_OAUTH_CLIENT_ID` and `<PROVIDER>_O
 
 **Auth middleware** (`apps/api/src/plugins/auth.ts`): `preHandler` hook on all routes except `/api/health`, `/api/auth/*`, `/api/setup/*`. WebSocket connections accept the token as a `?token=` query param. Next.js middleware (`apps/web/src/middleware.ts`) redirects unauthenticated users to `/login`.
 
-**Local dev bypass**: Set `OPTIO_AUTH_DISABLED=true` (API) and `NEXT_PUBLIC_AUTH_DISABLED=true` (web) to skip all auth checks. `GET /api/auth/me` returns a synthetic "Local Dev" user.
+**Local dev bypass**: Set `OPTIO_AUTH_DISABLED=true` (API and web middleware) to skip all auth checks. `GET /api/auth/me` returns a synthetic "Local Dev" user.
 
 **Key routes**:
 
@@ -572,7 +572,7 @@ Six BullMQ workers run as part of the API server:
 
 - Ensure Redis is running and accessible
 - Check that `REDIS_URL` is correctly configured
-- Verify the web app's `NEXT_PUBLIC_API_URL` points to the correct API host
+- Verify the web app's `INTERNAL_API_URL` points to the correct API host
 
 **Pod OOM-killed / crashed**:
 
@@ -582,8 +582,8 @@ Six BullMQ workers run as part of the API server:
 
 **OAuth login fails**:
 
-- Verify `API_PUBLIC_URL` and `WEB_PUBLIC_URL` match the actual deployment URLs
-- Ensure OAuth callback URLs are registered with the provider (e.g., `{API_PUBLIC_URL}/api/auth/github/callback`)
+- Verify `PUBLIC_URL` matches the actual deployment URL
+- Ensure OAuth callback URLs are registered with the provider (e.g., `{PUBLIC_URL}/api/auth/github/callback`)
 - Check for `invalid_state` errors — may indicate expired CSRF tokens (>10 min between login click and callback)
 
 **Database migration errors**:
@@ -599,7 +599,7 @@ Six BullMQ workers run as part of the API server:
 3. **Disable auth bypass**: Ensure `OPTIO_AUTH_DISABLED` is NOT set (or set to `false`)
 4. **External database**: Use managed PostgreSQL — set `postgresql.enabled=false` and `externalDatabase.url`
 5. **External Redis**: Use managed Redis — set `redis.enabled=false` and `externalRedis.url`
-6. **Public URLs**: Set `API_PUBLIC_URL` and `WEB_PUBLIC_URL` to the actual deployment URLs (required for OAuth callbacks)
+6. **Public URL**: Set `PUBLIC_URL` to the actual deployment URL (required for OAuth callbacks)
 7. **Ingress**: Enable `ingress.enabled=true` with TLS and proper host configuration
 8. **Agent image**: Push to a container registry and set `agent.imagePullPolicy=IfNotPresent` or `Always`
 9. **GitHub token**: Set `GITHUB_TOKEN` secret for PR watching, issue sync, and repo detection

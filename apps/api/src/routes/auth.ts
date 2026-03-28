@@ -14,7 +14,7 @@ import {
 } from "../services/session-service.js";
 import { SESSION_COOKIE_NAME } from "../plugins/auth.js";
 
-const WEB_URL = process.env.WEB_PUBLIC_URL ?? "http://localhost:3000";
+const WEB_URL = process.env.PUBLIC_URL ?? "http://localhost:3000";
 
 // In-memory state store for CSRF protection (short-lived, 10 min TTL, bounded size)
 const OAUTH_STATE_MAX_SIZE = 10_000;

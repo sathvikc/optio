@@ -36,12 +36,8 @@ Called from secrets.yaml to fail early on misconfiguration.
 */}}
 {{- define "optio.validateRequired" -}}
 {{- if not .Values.auth.disabled -}}
-  {{- if and (not .Values.publicUrl.api) (not .Values.publicUrl.web) -}}
-    {{- fail "publicUrl.api and publicUrl.web are required when auth is enabled. Set these to the externally-reachable URLs of your API and web services." -}}
-  {{- else if not .Values.publicUrl.api -}}
-    {{- fail "publicUrl.api is required when auth is enabled. Set to the externally-reachable URL of the API (e.g. https://optio.example.com)." -}}
-  {{- else if not .Values.publicUrl.web -}}
-    {{- fail "publicUrl.web is required when auth is enabled. Set to the externally-reachable URL of the web UI (e.g. https://optio.example.com)." -}}
+  {{- if not .Values.publicUrl -}}
+    {{- fail "publicUrl is required when auth is enabled. Set to the externally-reachable URL (e.g. https://optio.example.com)." -}}
   {{- else -}}
     {{- $hasProvider := or .Values.auth.github.clientId (or .Values.auth.google.clientId .Values.auth.gitlab.clientId) -}}
     {{- if not $hasProvider -}}

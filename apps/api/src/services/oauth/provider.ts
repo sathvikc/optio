@@ -18,6 +18,6 @@ export interface OAuthProvider {
 }
 
 export function getCallbackUrl(provider: string): string {
-  const base = process.env.API_PUBLIC_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
+  const base = process.env.PUBLIC_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
   return `${base}/api/auth/${provider}/callback`;
 }

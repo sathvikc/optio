@@ -36,7 +36,7 @@ describe("middleware", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: auth enabled
-    vi.stubEnv("NEXT_PUBLIC_AUTH_DISABLED", "");
+    vi.stubEnv("OPTIO_AUTH_DISABLED", "");
   });
 
   afterEach(() => {
@@ -85,7 +85,7 @@ describe("middleware", () => {
 
   describe("auth disabled", () => {
     it("allows all paths when auth is disabled", () => {
-      vi.stubEnv("NEXT_PUBLIC_AUTH_DISABLED", "true");
+      vi.stubEnv("OPTIO_AUTH_DISABLED", "true");
       // Re-import to get fresh env read — but since process.env is read at
       // call-time in the middleware, just calling it should work
       middleware(createRequest("/tasks"));

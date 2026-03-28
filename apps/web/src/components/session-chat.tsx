@@ -18,8 +18,7 @@ import {
   Loader2,
   Lightbulb,
 } from "lucide-react";
-
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000";
+import { getWsBaseUrl } from "@/lib/ws-client.js";
 
 interface ChatEvent {
   taskId: string;
@@ -76,7 +75,7 @@ export function SessionChat({ sessionId, onCostUpdate, onSendToAgent }: SessionC
 
   // WebSocket connection
   useEffect(() => {
-    const ws = new WebSocket(`${WS_URL}/ws/sessions/${sessionId}/chat`);
+    const ws = new WebSocket(`${getWsBaseUrl()}/ws/sessions/${sessionId}/chat`);
     wsRef.current = ws;
 
     ws.onopen = () => {

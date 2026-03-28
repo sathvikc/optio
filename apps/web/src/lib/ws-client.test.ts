@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { WsClient } from "./ws-client";
+import { WsClient, getWsBaseUrl } from "./ws-client";
 
 class MockWebSocket {
   static OPEN = 1;
@@ -197,5 +197,60 @@ describe("WsClient", () => {
     ws.onerror!();
 
     expect(ws.close).toHaveBeenCalled();
+  });
+});
+
+describe("getWsBaseUrl", () => {
+  const originalWindow = globalThis.window;
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (!globalThis.window && originalWindow) {
+      Object.defineProperty(globalThis, "window", {
+        value: originalWindow,
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
+
+  it("returns NEXT_PUBLIC_WS_URL when set", () => {
+    vi.stubEnv("NEXT_PUBLIC_WS_URL", "ws://custom:9999");
+    expect(getWsBaseUrl()).toBe("ws://custom:9999");
+  });
+
+  it("returns ws:// + host for http: pages", () => {
+    vi.stubEnv("NEXT_PUBLIC_WS_URL", "");
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        location: { protocol: "http:", host: "localhost:3000" },
+      },
+      writable: true,
+      configurable: true,
+    });
+    expect(getWsBaseUrl()).toBe("ws://localhost:3000");
+  });
+
+  it("returns wss:// + host for https: pages", () => {
+    vi.stubEnv("NEXT_PUBLIC_WS_URL", "");
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        location: { protocol: "https:", host: "optio.example.com" },
+      },
+      writable: true,
+      configurable: true,
+    });
+    expect(getWsBaseUrl()).toBe("wss://optio.example.com");
+  });
+
+  it("returns SSR fallback when window is undefined", () => {
+    vi.stubEnv("NEXT_PUBLIC_WS_URL", "");
+    // @ts-expect-error -- simulating SSR by removing window
+    delete globalThis.window;
+    expect(getWsBaseUrl()).toBe("ws://localhost:4000");
   });
 });

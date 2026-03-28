@@ -24,7 +24,7 @@ export function middleware(request: NextRequest) {
   // We check for the session cookie client-side; middleware only redirects
   // if no cookie is present AND auth is not disabled.
   // Since middleware can't call the API, we use an env var check.
-  const authDisabled = process.env.NEXT_PUBLIC_AUTH_DISABLED === "true";
+  const authDisabled = process.env.OPTIO_AUTH_DISABLED === "true";
   if (authDisabled) {
     return NextResponse.next();
   }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const INTERNAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? "http://localhost:4000";
 const SESSION_COOKIE_NAME = "optio_session";
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 

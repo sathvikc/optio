@@ -14,8 +14,6 @@ import { ActionCard } from "./action-card.js";
 import { api } from "@/lib/api-client";
 import { ChatMarkdown } from "./chat-markdown.js";
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000";
-
 export function OptioChatPanel() {
   const {
     isOpen,

@@ -2,8 +2,7 @@ import { logger } from "../logger.js";
 import type { TaskState } from "@optio/shared";
 import type { RepoRecord } from "./repo-service.js";
 
-const WEB_URL = process.env.WEB_PUBLIC_URL ?? "http://localhost:3100";
-const API_URL = process.env.API_PUBLIC_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
+const PUBLIC_URL = process.env.PUBLIC_URL ?? "http://localhost:3000";
 
 /** Task states that can trigger Slack notifications */
 export const NOTIFIABLE_STATES = ["completed", "failed", "needs_attention", "pr_opened"] as const;
@@ -108,7 +107,7 @@ export function buildSlackMessage(
   const color = STATE_COLOR[toState];
   const label = STATE_LABEL[toState];
   const repoName = extractRepoName(task.repoUrl);
-  const taskUrl = `${WEB_URL}/tasks/${task.id}`;
+  const taskUrl = `${PUBLIC_URL}/tasks/${task.id}`;
 
   const fallbackText = `${emoji} *${label}*: ${task.title} (${repoName})`;
 

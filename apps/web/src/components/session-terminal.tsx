@@ -5,8 +5,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000";
+import { getWsBaseUrl } from "@/lib/ws-client.js";
 
 export function SessionTerminal({ sessionId }: { sessionId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -43,7 +42,7 @@ export function SessionTerminal({ sessionId }: { sessionId: string }) {
     termRef.current = term;
 
     // WebSocket connection to session terminal
-    const ws = new WebSocket(`${WS_URL}/ws/sessions/${sessionId}/terminal`);
+    const ws = new WebSocket(`${getWsBaseUrl()}/ws/sessions/${sessionId}/terminal`);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {

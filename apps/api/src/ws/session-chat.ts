@@ -147,7 +147,7 @@ export async function sessionChatWs(app: FastifyInstance) {
       if (userSessionToken) {
         passthroughEnv.OPTIO_SESSION_TOKEN = userSessionToken;
       }
-      const apiUrl = process.env.API_PUBLIC_URL || process.env.OPTIO_API_URL || "";
+      const apiUrl = process.env.PUBLIC_URL || process.env.OPTIO_API_URL || "";
       if (apiUrl) {
         passthroughEnv.OPTIO_API_URL = apiUrl;
       }
