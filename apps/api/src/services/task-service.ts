@@ -140,12 +140,13 @@ export async function searchTasks(opts: SearchTasksOpts) {
     conditions.push(sql`CAST(${tasks.costUsd} AS numeric) <= ${Number(opts.costMax)}`);
   }
 
-  // Date range
+  // Date range — filter on updatedAt so actively running tasks (which may have
+  // been created days ago) still appear in time-filtered views
   if (opts.createdAfter) {
-    conditions.push(gte(tasks.createdAt, new Date(opts.createdAfter)));
+    conditions.push(gte(tasks.updatedAt, new Date(opts.createdAfter)));
   }
   if (opts.createdBefore) {
-    conditions.push(lte(tasks.createdAt, new Date(opts.createdBefore)));
+    conditions.push(lte(tasks.updatedAt, new Date(opts.createdBefore)));
   }
 
   // Cursor-based pagination: cursor is base64 of "createdAt|id"

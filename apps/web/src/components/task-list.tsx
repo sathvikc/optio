@@ -78,9 +78,9 @@ const STAGE_FILTERS = [
 ];
 
 const TIME_FILTERS = [
-  { value: "1d", label: "Last 24h" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
+  { value: "1d", label: "Active 24h" },
+  { value: "7d", label: "Active 7d" },
+  { value: "30d", label: "Active 30d" },
   { value: "", label: "All time" },
 ];
 
