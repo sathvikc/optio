@@ -13,6 +13,38 @@ Web UI:      http://localhost:{{ .Values.web.service.nodePort | default .Values.
 Web UI:      kubectl port-forward -n {{ .Values.namespace }} svc/{{ .Release.Name }}-web {{ .Values.web.port }}:{{ .Values.web.port }}
 {{- end }}
 
+{{- if .Values.ingress.enabled }}
+
+---
+
+INGRESS
+
+Traffic is routed via Ingress ({{ .Values.ingress.className }}).
+{{- end }}
+{{- if and .Values.gatewayAPI.enabled (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1") }}
+
+---
+
+GATEWAY API
+
+Traffic is routed via Gateway API ({{ .Values.gatewayAPI.gatewayClassName }}).
+  Gateway:   {{ .Release.Name }}-gateway
+  HTTPRoute: {{ .Release.Name }}-httproute
+{{- if .Values.gatewayAPI.hostname }}
+  Hostname:  {{ .Values.gatewayAPI.hostname }}
+{{- end }}
+{{- end }}
+{{- if and .Values.gatewayAPI.enabled (not (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1")) }}
+
+---
+
+WARNING: gatewayAPI.enabled is true but gateway.networking.k8s.io/v1 CRDs are
+not installed in this cluster. No Gateway or HTTPRoute resources were created.
+Install the Gateway API CRDs first:
+
+  kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/latest/download/standard-install.yaml
+{{- end }}
+
 ---
 
 METRICS SERVER

@@ -46,3 +46,13 @@ Called from secrets.yaml to fail early on misconfiguration.
   {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Validate that ingress and gatewayAPI are not both enabled.
+Called from gateway.yaml / ingress.yaml guards.
+*/}}
+{{- define "optio.validateNetworking" -}}
+{{- if and .Values.ingress.enabled .Values.gatewayAPI.enabled -}}
+  {{- fail "ingress.enabled and gatewayAPI.enabled are mutually exclusive. Disable one before enabling the other." -}}
+{{- end -}}
+{{- end }}

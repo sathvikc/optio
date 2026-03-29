@@ -1,0 +1,29 @@
+{{- include "optio.validateNetworking" . }}
+{{- if and .Values.gatewayAPI.enabled (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1") }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "optio.labels" . | nindent 4 }}
+  {{- with .Values.gatewayAPI.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ required "gatewayAPI.gatewayClassName is required when gatewayAPI.enabled=true" .Values.gatewayAPI.gatewayClassName }}
+  listeners:
+    {{- range .Values.gatewayAPI.listeners }}
+    - name: {{ .name | default "http" }}
+      port: {{ .port | default 80 }}
+      protocol: {{ .protocol | default "HTTP" }}
+      {{- if $.Values.gatewayAPI.hostname }}
+      hostname: {{ $.Values.gatewayAPI.hostname | quote }}
+      {{- end }}
+      {{- if .tls }}
+      tls:
+        {{- toYaml .tls | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}

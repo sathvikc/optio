@@ -260,6 +260,31 @@ ingress:
   #      - optio.example.com
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Gateway API
+# Alternative to Ingress for clusters running Gateway API (GA in K8s 1.26+).
+# Mutually exclusive with ingress — do not enable both.
+# ──────────────────────────────────────────────────────────────────────────────
+gatewayAPI:
+  enabled: false
+  # Gateway controller class (required when enabled).
+  # Common values: cilium, istio, envoy-gateway
+  gatewayClassName: ""
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+    # - name: https
+    #   port: 443
+    #   protocol: HTTPS
+    #   tls:
+    #     mode: Terminate
+    #     certificateRefs:
+    #       - name: optio-tls
+  # Hostname for the Gateway and HTTPRoute. Leave empty for wildcard.
+  hostname: ""
+  annotations: {}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Namespace
 # ──────────────────────────────────────────────────────────────────────────────
 namespace: optio
