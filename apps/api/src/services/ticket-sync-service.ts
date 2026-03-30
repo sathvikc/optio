@@ -45,9 +45,35 @@ export async function syncAllTickets(): Promise<number> {
           continue;
         }
 
+        // Fetch comments for context
+        let commentsSection = "";
+        try {
+          const comments = await provider.fetchTicketComments(
+            ticket.externalId,
+            providerConfig.config,
+          );
+          if (comments.length > 0) {
+            commentsSection =
+              "\n\n## Comments\n\n" +
+              comments.map((c) => `**${c.author}** (${c.createdAt}):\n${c.body}`).join("\n\n");
+          }
+        } catch (err) {
+          logger.warn({ err, ticketId: ticket.externalId }, "Failed to fetch ticket comments");
+        }
+
+        // Include attachments if available (e.g. from Jira)
+        let attachmentsSection = "";
+        if (ticket.attachments && ticket.attachments.length > 0) {
+          attachmentsSection =
+            "\n\n## Attachments\n\n" +
+            ticket.attachments
+              .map((a) => `- [${a.filename}](${a.url})${a.mimeType ? ` (${a.mimeType})` : ""}`)
+              .join("\n");
+        }
+
         const task = await taskService.createTask({
           title: ticket.title,
-          prompt: `${ticket.title}\n\n${ticket.body}`,
+          prompt: `${ticket.title}\n\n${ticket.body}${commentsSection}${attachmentsSection}`,
           repoUrl,
           agentType,
           ticketSource: ticket.source,

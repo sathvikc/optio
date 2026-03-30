@@ -4,6 +4,7 @@ import {
   DEFAULT_TICKET_LABEL,
   DEFAULT_MAX_TICKET_PAGES,
   type Ticket,
+  type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
 import type { TicketProvider } from "./types.js";
@@ -76,6 +77,31 @@ export class LinearTicketProvider implements TicketProvider {
     }
 
     return allTickets;
+  }
+
+  async fetchTicketComments(
+    ticketId: string,
+    config: TicketProviderConfig,
+  ): Promise<TicketComment[]> {
+    const linearConfig = asLinearConfig(config);
+    const client = new LinearClient({ apiKey: linearConfig.apiKey });
+
+    const issue = await this.findIssueByIdentifier(client, ticketId);
+    if (!issue) return [];
+
+    const comments = await issue.comments({ first: 30 });
+    const results: TicketComment[] = [];
+
+    for (const c of comments.nodes) {
+      const user = await c.user;
+      results.push({
+        author: user?.name ?? user?.displayName ?? "unknown",
+        body: c.body,
+        createdAt: typeof c.createdAt === "string" ? c.createdAt : c.createdAt.toISOString(),
+      });
+    }
+
+    return results;
   }
 
   private async findIssueByIdentifier(client: LinearClient, identifier: string) {

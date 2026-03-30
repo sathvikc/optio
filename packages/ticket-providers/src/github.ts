@@ -4,6 +4,7 @@ import {
   DEFAULT_TICKET_LABEL,
   DEFAULT_MAX_TICKET_PAGES,
   type Ticket,
+  type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
 import type { TicketProvider } from "./types.js";
@@ -78,6 +79,27 @@ export class GitHubTicketProvider implements TicketProvider {
     }
 
     return allTickets;
+  }
+
+  async fetchTicketComments(
+    ticketId: string,
+    config: TicketProviderConfig,
+  ): Promise<TicketComment[]> {
+    const ghConfig = asGitHubConfig(config);
+    const octokit = new Octokit({ auth: ghConfig.token });
+
+    const { data: comments } = await octokit.issues.listComments({
+      owner: ghConfig.owner,
+      repo: ghConfig.repo,
+      issue_number: parseInt(ticketId, 10),
+      per_page: 30,
+    });
+
+    return comments.map((c) => ({
+      author: c.user?.login ?? "unknown",
+      body: c.body ?? "",
+      createdAt: c.created_at,
+    }));
   }
 
   async addComment(ticketId: string, comment: string, config: TicketProviderConfig): Promise<void> {

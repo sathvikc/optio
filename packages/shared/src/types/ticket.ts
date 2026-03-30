@@ -4,6 +4,12 @@ export enum TicketSource {
   JIRA = "jira",
 }
 
+export interface TicketComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 export interface Ticket {
   externalId: string;
   source: TicketSource;
@@ -14,6 +20,7 @@ export interface Ticket {
   assignee?: string;
   repo?: string;
   attachments?: Array<{ filename: string; url: string; mimeType?: string }>;
+  comments?: TicketComment[];
   metadata: Record<string, unknown>;
 }
 

@@ -194,6 +194,29 @@ export async function issueRoutes(app: FastifyInstance) {
       logger.warn({ err }, "Failed to add optio label");
     }
 
+    // Fetch issue comments for context
+    let commentsSection = "";
+    try {
+      const commentsRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repoName}/issues/${body.issueNumber}/comments?per_page=30`,
+        { headers },
+      );
+      if (commentsRes.ok) {
+        const issueComments = (await commentsRes.json()) as any[];
+        if (issueComments.length > 0) {
+          commentsSection =
+            "\n\n## Comments\n\n" +
+            issueComments
+              .map(
+                (c: any) => `**${c.user?.login ?? "unknown"}** (${c.created_at}):\n${c.body ?? ""}`,
+              )
+              .join("\n\n");
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, issueNumber: body.issueNumber }, "Failed to fetch issue comments");
+    }
+
     // Create the Optio task
     const taskServiceModule = await import("../services/task-service.js");
     const { TaskState } = await import("@optio/shared");
@@ -201,7 +224,7 @@ export async function issueRoutes(app: FastifyInstance) {
 
     const task = await taskServiceModule.createTask({
       title: body.title,
-      prompt: `${body.title}\n\n${body.body}`,
+      prompt: `${body.title}\n\n${body.body}${commentsSection}`,
       repoUrl: repo.repoUrl,
       agentType: body.agentType ?? "claude-code",
       ticketSource: "github",

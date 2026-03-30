@@ -4,6 +4,7 @@ import {
   DEFAULT_TICKET_LABEL,
   DEFAULT_MAX_TICKET_PAGES,
   type Ticket,
+  type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
 import type { TicketProvider } from "./types.js";
@@ -148,6 +149,34 @@ export class JiraTicketProvider implements TicketProvider {
     }
 
     return allTickets;
+  }
+
+  async fetchTicketComments(
+    ticketId: string,
+    config: TicketProviderConfig,
+  ): Promise<TicketComment[]> {
+    const jiraConfig = asJiraConfig(config);
+    const client = new Version3Client({
+      host: jiraConfig.baseUrl,
+      authentication: {
+        basic: {
+          email: jiraConfig.email,
+          apiToken: jiraConfig.apiToken,
+        },
+      },
+    });
+
+    const response = await client.issueComments.getComments({
+      issueIdOrKey: ticketId,
+      maxResults: 30,
+      orderBy: "-created",
+    });
+
+    return (response.comments ?? []).map((c: any) => ({
+      author: c.author?.displayName ?? "unknown",
+      body: typeof c.body === "string" ? c.body : adfToPlaintext(c.body),
+      createdAt: c.created ?? "",
+    }));
   }
 
   async addComment(ticketId: string, comment: string, config: TicketProviderConfig): Promise<void> {
