@@ -403,6 +403,10 @@ export function startPrWatcherWorker() {
             try {
               switch (action.action) {
                 case "complete":
+                  await db
+                    .update(tasks)
+                    .set({ prChecksStatus: effectiveChecksStatus })
+                    .where(eq(tasks.id, task.id));
                   await taskService.transitionTask(
                     task.id,
                     TaskState.COMPLETED,
@@ -413,6 +417,10 @@ export function startPrWatcherWorker() {
                   continue;
 
                 case "fail":
+                  await db
+                    .update(tasks)
+                    .set({ prChecksStatus: effectiveChecksStatus })
+                    .where(eq(tasks.id, task.id));
                   await taskService.transitionTask(
                     task.id,
                     TaskState.FAILED,
@@ -431,6 +439,10 @@ export function startPrWatcherWorker() {
                     },
                   );
                   if (mergeRes.ok) {
+                    await db
+                      .update(tasks)
+                      .set({ prChecksStatus: effectiveChecksStatus })
+                      .where(eq(tasks.id, task.id));
                     await taskService.transitionTask(
                       task.id,
                       TaskState.COMPLETED,
