@@ -637,8 +637,41 @@ function LogLine({
         return null;
       }
     } catch {
-      // Not valid JSON despite the prefix — fall through to normal text rendering
+      // Truncated JSON (first half of a split line) — hide it since the
+      // content is a partial duplicate of the fragment entry that follows
+      return null;
     }
+  }
+
+  // Handle fragment entries — second halves of split JSON lines containing
+  // raw file content with double-escaped characters. Detect by: text type,
+  // long content, and presence of double-escaped sequences typical of code.
+  if (
+    type === "text" &&
+    log.content.length > 500 &&
+    (log.content.includes("\\n") || log.content.includes('\\"'))
+  ) {
+    let display = log.content;
+    // Strip trailing JSON metadata from split lines (e.g. ...,"session_id":"..."})
+    const sessionTail = display.lastIndexOf('","session_id":"');
+    if (sessionTail !== -1) display = display.slice(0, sessionTail);
+    // Strip trailing structured patch data
+    const patchTail = display.lastIndexOf('","structuredPatch":');
+    if (patchTail !== -1) display = display.slice(0, patchTail);
+    // Strip trailing JSON array fragments from edit tool results
+    const editTail = display.lastIndexOf('"],"userModified":');
+    if (editTail !== -1) display = display.slice(0, editTail);
+    display = display.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
+    if (display.trim()) {
+      return (
+        <div className="py-0.5 pl-5 text-text-muted/50 overflow-auto max-h-60">
+          <pre className="whitespace-pre-wrap break-all text-[11px] leading-relaxed">
+            <HighlightedText text={display} search={searchQuery} />
+          </pre>
+        </div>
+      );
+    }
+    return null;
   }
 
   if (type === "system") {
@@ -664,6 +697,8 @@ function LogLine({
     let display = log.content;
     const patchIdx = display.indexOf('","structuredPatch":');
     if (patchIdx !== -1) display = display.slice(0, patchIdx);
+
+    display = display.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
     display = display.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
     return (
       <div className="py-0.5 pl-5 text-text-muted/50 overflow-auto max-h-60">
