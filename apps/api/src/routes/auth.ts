@@ -14,50 +14,52 @@ import {
 } from "../services/session-service.js";
 import { storeUserGitHubTokens } from "../services/github-token-service.js";
 import { SESSION_COOKIE_NAME } from "../plugins/auth.js";
+import { getRedisClient } from "../services/event-bus.js";
 
 const WEB_URL = process.env.PUBLIC_URL ?? "http://localhost:3000";
 
-// In-memory state store for CSRF protection (short-lived, 10 min TTL, bounded size)
-const OAUTH_STATE_MAX_SIZE = 10_000;
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const oauthStates = new Map<string, { provider: string; createdAt: number }>();
+// Redis key prefixes and TTLs
+const OAUTH_STATE_PREFIX = "oauth_state:";
+const OAUTH_STATE_TTL_SECS = 600; // 10 minutes
+const AUTH_CODE_PREFIX = "auth_code:";
+const AUTH_CODE_TTL_SECS = 300; // 5 minutes
 
-// In-memory store for short-lived auth codes (exchange-code flow, 60s TTL, bounded)
-const AUTH_CODE_MAX_SIZE = 10_000;
-const AUTH_CODE_TTL_MS = 60 * 1000;
-const authCodes = new Map<string, { token: string; createdAt: number }>();
-
-// Clean expired states periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of oauthStates) {
-    if (now - val.createdAt > OAUTH_STATE_TTL_MS) oauthStates.delete(key);
-  }
-  for (const [key, val] of authCodes) {
-    if (now - val.createdAt > AUTH_CODE_TTL_MS) authCodes.delete(key);
-  }
-}, 60_000);
-
-function evictOldest<T extends { createdAt: number }>(map: Map<string, T>): void {
-  let oldest: string | undefined;
-  let oldestTime = Infinity;
-  for (const [key, val] of map) {
-    if (val.createdAt < oldestTime) {
-      oldestTime = val.createdAt;
-      oldest = key;
-    }
-  }
-  if (oldest) map.delete(oldest);
+async function addOAuthState(state: string, provider: string): Promise<void> {
+  const redis = getRedisClient();
+  await redis.setex(
+    `${OAUTH_STATE_PREFIX}${state}`,
+    OAUTH_STATE_TTL_SECS,
+    JSON.stringify({ provider }),
+  );
 }
 
-function addOAuthState(state: string, provider: string): void {
-  if (oauthStates.size >= OAUTH_STATE_MAX_SIZE) evictOldest(oauthStates);
-  oauthStates.set(state, { provider, createdAt: Date.now() });
+async function getOAuthState(state: string): Promise<{ provider: string } | null> {
+  const redis = getRedisClient();
+  const raw = await redis.get(`${OAUTH_STATE_PREFIX}${state}`);
+  if (!raw) return null;
+  return JSON.parse(raw) as { provider: string };
 }
 
-function addAuthCode(code: string, token: string): void {
-  if (authCodes.size >= AUTH_CODE_MAX_SIZE) evictOldest(authCodes);
-  authCodes.set(code, { token, createdAt: Date.now() });
+async function deleteOAuthState(state: string): Promise<void> {
+  const redis = getRedisClient();
+  await redis.del(`${OAUTH_STATE_PREFIX}${state}`);
+}
+
+async function addAuthCode(code: string, token: string): Promise<void> {
+  const redis = getRedisClient();
+  await redis.setex(`${AUTH_CODE_PREFIX}${code}`, AUTH_CODE_TTL_SECS, JSON.stringify({ token }));
+}
+
+async function getAuthCode(code: string): Promise<{ token: string } | null> {
+  const redis = getRedisClient();
+  const raw = await redis.get(`${AUTH_CODE_PREFIX}${code}`);
+  if (!raw) return null;
+  return JSON.parse(raw) as { token: string };
+}
+
+async function deleteAuthCode(code: string): Promise<void> {
+  const redis = getRedisClient();
+  await redis.del(`${AUTH_CODE_PREFIX}${code}`);
 }
 
 export async function authRoutes(app: FastifyInstance) {
@@ -150,7 +152,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const state = randomBytes(16).toString("hex");
-    addOAuthState(state, providerName);
+    await addOAuthState(state, providerName);
 
     const url = provider.authorizeUrl(state);
     reply.redirect(url);
@@ -173,11 +175,11 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     // Verify state
-    const storedState = oauthStates.get(state);
+    const storedState = await getOAuthState(state);
     if (!storedState || storedState.provider !== providerName) {
       return reply.redirect(`${WEB_URL}/login?error=invalid_state`);
     }
-    oauthStates.delete(state);
+    await deleteOAuthState(state);
 
     const provider = getOAuthProvider(providerName);
     if (!provider) {
@@ -203,7 +205,7 @@ export async function authRoutes(app: FastifyInstance) {
       // sets the HttpOnly cookie on its own origin — avoiding cross-origin
       // cookie issues when API and web run on different origins.
       const authCode = randomBytes(32).toString("hex");
-      addAuthCode(authCode, session.token);
+      await addAuthCode(authCode, session.token);
       reply.redirect(`${WEB_URL}/auth/callback?code=${authCode}`);
     } catch (err) {
       app.log.error(err, "OAuth callback failed");
@@ -218,11 +220,11 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Missing code" });
     }
 
-    const entry = authCodes.get(code);
+    const entry = await getAuthCode(code);
     if (!entry) {
       return reply.status(400).send({ error: "Invalid or expired code" });
     }
-    authCodes.delete(code); // one-time use
+    await deleteAuthCode(code); // one-time use
 
     const user = await validateSession(entry.token);
     if (!user) {

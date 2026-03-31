@@ -28,6 +28,11 @@ export async function publishSessionEvent(sessionId: string, event: WsEvent): Pr
   await redis.publish(`optio:session:${sessionId}`, JSON.stringify(event));
 }
 
+/** Return the shared Redis client (usable for pub/sub publishing and general commands). */
+export function getRedisClient(): Redis {
+  return getPublisher();
+}
+
 export function createSubscriber(): Redis {
   return new Redis(redisUrl);
 }
