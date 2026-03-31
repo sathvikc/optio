@@ -30,6 +30,22 @@ vi.mock("../logger.js", () => ({
   },
 }));
 
+// Mock encrypt/decrypt from secret-service
+const mockEncrypt = vi.fn().mockImplementation((plaintext: string) => ({
+  encrypted: Buffer.from(`enc:${plaintext}`),
+  iv: Buffer.from("mock-iv-1234567"),
+  authTag: Buffer.from("mock-auth-tag12"),
+}));
+const mockDecrypt = vi.fn().mockImplementation((encrypted: Buffer) => {
+  const str = encrypted.toString();
+  return str.startsWith("enc:") ? str.slice(4) : str;
+});
+
+vi.mock("./secret-service.js", () => ({
+  encrypt: (...args: unknown[]) => mockEncrypt(...args),
+  decrypt: (...args: unknown[]) => mockDecrypt(...args),
+}));
+
 import { db } from "../db/client.js";
 import {
   signPayload,
@@ -42,6 +58,35 @@ import {
   deliverWebhook,
   getWebhooksForEvent,
 } from "./webhook-service.js";
+
+/** Helper to build a mock DB row with encrypted secret columns */
+function makeDbRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "wh-1",
+    url: "https://example.com/hook",
+    workspaceId: null,
+    events: ["task.completed"],
+    encryptedSecret: null as Buffer | null,
+    secretIv: null as Buffer | null,
+    secretAuthTag: null as Buffer | null,
+    description: null,
+    active: true,
+    createdBy: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+/** Helper to build a DB row with an encrypted secret */
+function makeDbRowWithSecret(secret: string, overrides: Record<string, unknown> = {}) {
+  return makeDbRow({
+    encryptedSecret: Buffer.from(`enc:${secret}`),
+    secretIv: Buffer.from("mock-iv-1234567"),
+    secretAuthTag: Buffer.from("mock-auth-tag12"),
+    ...overrides,
+  });
+}
 
 describe("signPayload", () => {
   it("produces a valid HMAC-SHA256 hex signature", () => {
@@ -90,11 +135,30 @@ describe("webhook CRUD", () => {
   });
 
   describe("createWebhook", () => {
-    it("creates a webhook with defaults", async () => {
-      const webhook = { id: "wh-1", url: "https://example.com/hook" };
+    it("creates a webhook and encrypts the secret", async () => {
+      const dbRow = makeDbRowWithSecret("my-secret");
       (db.insert as any) = vi.fn().mockReturnValue({
         values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([webhook]),
+          returning: vi.fn().mockResolvedValue([dbRow]),
+        }),
+      });
+
+      const result = await createWebhook({
+        url: "https://example.com/hook",
+        events: ["task.completed"],
+        secret: "my-secret",
+      });
+
+      expect(mockEncrypt).toHaveBeenCalledWith("my-secret");
+      expect(result.secret).toBe("my-secret");
+      expect(result.id).toBe("wh-1");
+    });
+
+    it("creates a webhook without secret", async () => {
+      const dbRow = makeDbRow();
+      (db.insert as any) = vi.fn().mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([dbRow]),
         }),
       });
 
@@ -103,7 +167,8 @@ describe("webhook CRUD", () => {
         events: ["task.completed"],
       });
 
-      expect(result).toEqual(webhook);
+      expect(mockEncrypt).not.toHaveBeenCalled();
+      expect(result.secret).toBeNull();
     });
 
     it("passes createdBy when provided", async () => {
@@ -111,7 +176,7 @@ describe("webhook CRUD", () => {
       (db.insert as any) = vi.fn().mockReturnValue({
         values: vi.fn().mockImplementation((vals: any) => {
           capturedValues = vals;
-          return { returning: vi.fn().mockResolvedValue([{ id: "wh-1" }]) };
+          return { returning: vi.fn().mockResolvedValue([makeDbRow()]) };
         }),
       });
 
@@ -122,8 +187,8 @@ describe("webhook CRUD", () => {
   });
 
   describe("listWebhooks", () => {
-    it("returns all webhooks ordered by createdAt", async () => {
-      const hooks = [{ id: "wh-1" }, { id: "wh-2" }];
+    it("returns all webhooks with decrypted secrets ordered by createdAt", async () => {
+      const hooks = [makeDbRowWithSecret("secret-1", { id: "wh-1" }), makeDbRow({ id: "wh-2" })];
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockResolvedValue(hooks),
@@ -131,20 +196,27 @@ describe("webhook CRUD", () => {
       });
 
       const result = await listWebhooks();
-      expect(result).toEqual(hooks);
+      expect(result).toHaveLength(2);
+      expect(result[0].secret).toBe("secret-1");
+      expect(result[1].secret).toBeNull();
     });
   });
 
   describe("getWebhook", () => {
-    it("returns webhook when found", async () => {
+    it("returns webhook with decrypted secret when found", async () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: "wh-1", url: "https://example.com" }]),
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              makeDbRowWithSecret("real-secret", { url: "https://example.com" }),
+            ]),
         }),
       });
 
       const result = await getWebhook("wh-1");
       expect(result!.url).toBe("https://example.com");
+      expect(result!.secret).toBe("real-secret");
     });
 
     it("returns null when not found", async () => {
@@ -208,7 +280,7 @@ describe("deliverWebhook", () => {
     vi.clearAllMocks();
   });
 
-  it("delivers a standard webhook with signature", async () => {
+  it("delivers a standard webhook with signature using decrypted secret", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -225,12 +297,17 @@ describe("deliverWebhook", () => {
     const webhook = {
       id: "wh-1",
       url: "https://example.com/hook",
+      workspaceId: null,
       secret: "my-secret",
       events: ["task.completed"],
+      description: null,
       active: true,
+      createdBy: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
 
-    const result = await deliverWebhook(webhook as any, "task.completed", {
+    const result = await deliverWebhook(webhook, "task.completed", {
       taskId: "t-1",
       taskTitle: "Test",
     });
@@ -265,12 +342,17 @@ describe("deliverWebhook", () => {
     const webhook = {
       id: "wh-1",
       url: "https://hooks.slack.com/services/T00/B00/xxx",
+      workspaceId: null,
       secret: null,
       events: ["task.completed"],
+      description: null,
       active: true,
+      createdBy: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
 
-    await deliverWebhook(webhook as any, "task.completed", { taskId: "t-1", taskTitle: "My Task" });
+    await deliverWebhook(webhook, "task.completed", { taskId: "t-1", taskTitle: "My Task" });
 
     const callArgs = mockFetch.mock.calls[0];
     const body = JSON.parse(callArgs[1].body);
@@ -296,7 +378,18 @@ describe("deliverWebhook", () => {
     });
 
     await deliverWebhook(
-      { id: "wh-1", url: "https://example.com", secret: null, events: [], active: true } as any,
+      {
+        id: "wh-1",
+        url: "https://example.com",
+        workspaceId: null,
+        secret: null,
+        events: [],
+        description: null,
+        active: true,
+        createdBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
       "task.failed",
       { taskId: "t-1" },
     );
@@ -317,7 +410,18 @@ describe("deliverWebhook", () => {
     });
 
     await deliverWebhook(
-      { id: "wh-1", url: "https://example.com", secret: null, events: [], active: true } as any,
+      {
+        id: "wh-1",
+        url: "https://example.com",
+        workspaceId: null,
+        secret: null,
+        events: [],
+        description: null,
+        active: true,
+        createdBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
       "task.failed",
       {},
     );
@@ -341,7 +445,18 @@ describe("deliverWebhook", () => {
     });
 
     await deliverWebhook(
-      { id: "wh-1", url: "https://example.com", secret: null, events: [], active: true } as any,
+      {
+        id: "wh-1",
+        url: "https://example.com",
+        workspaceId: null,
+        secret: null,
+        events: [],
+        description: null,
+        active: true,
+        createdBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
       "task.completed",
       {},
     );
@@ -356,12 +471,16 @@ describe("getWebhooksForEvent", () => {
     vi.clearAllMocks();
   });
 
-  it("returns active webhooks subscribed to the event", async () => {
+  it("returns active webhooks subscribed to the event with decrypted secrets", async () => {
     (db.select as any) = vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([
-          { id: "wh-1", events: ["task.completed", "task.failed"], active: true },
-          { id: "wh-2", events: ["task.failed"], active: true },
+          makeDbRowWithSecret("s1", {
+            id: "wh-1",
+            events: ["task.completed", "task.failed"],
+            active: true,
+          }),
+          makeDbRow({ id: "wh-2", events: ["task.failed"], active: true }),
         ]),
       }),
     });
@@ -369,12 +488,15 @@ describe("getWebhooksForEvent", () => {
     const result = await getWebhooksForEvent("task.completed");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("wh-1");
+    expect(result[0].secret).toBe("s1");
   });
 
   it("returns empty array when no webhooks match", async () => {
     (db.select as any) = vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ id: "wh-1", events: ["task.failed"], active: true }]),
+        where: vi
+          .fn()
+          .mockResolvedValue([makeDbRow({ id: "wh-1", events: ["task.failed"], active: true })]),
       }),
     });
 

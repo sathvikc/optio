@@ -226,7 +226,9 @@ export const repos = pgTable(
     testCommand: text("test_command"), // "npm test", "cargo test", etc.
     reviewModel: text("review_model").default("sonnet"), // can use cheaper model for reviews
     maxAutoResumes: integer("max_auto_resumes"), // null = use OPTIO_MAX_AUTO_RESUMES env var or default (10)
-    slackWebhookUrl: text("slack_webhook_url"), // Slack incoming webhook URL
+    encryptedSlackWebhookUrl: bytea("encrypted_slack_webhook_url"), // AES-256-GCM encrypted Slack webhook URL
+    slackWebhookUrlIv: bytea("slack_webhook_url_iv"),
+    slackWebhookUrlAuthTag: bytea("slack_webhook_url_auth_tag"),
     slackChannel: text("slack_channel"), // override channel (optional)
     slackNotifyOn: jsonb("slack_notify_on").$type<string[]>(), // e.g. ["completed","failed","pr_opened","needs_attention"]
     slackEnabled: boolean("slack_enabled").notNull().default(false),
@@ -321,7 +323,9 @@ export const webhooks = pgTable(
     url: text("url").notNull(),
     workspaceId: uuid("workspace_id"), // nullable for backward compat
     events: jsonb("events").$type<string[]>().notNull(), // array of webhook_event values
-    secret: text("secret"), // HMAC-SHA256 signing secret (plaintext; only used for outbound signing)
+    encryptedSecret: bytea("encrypted_secret"), // AES-256-GCM encrypted signing secret
+    secretIv: bytea("secret_iv"),
+    secretAuthTag: bytea("secret_auth_tag"),
     description: text("description"),
     active: boolean("active").notNull().default(true),
     createdBy: uuid("created_by"),

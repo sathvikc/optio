@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { eq, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { webhooks, webhookDeliveries } from "../db/schema.js";
+import { encrypt, decrypt } from "./secret-service.js";
 import { logger } from "../logger.js";
 
 export type WebhookEvent =
@@ -19,6 +20,41 @@ export const VALID_EVENTS: WebhookEvent[] = [
   "review.completed",
 ];
 
+export interface WebhookRecord {
+  id: string;
+  url: string;
+  workspaceId: string | null;
+  events: string[];
+  secret: string | null;
+  description: string | null;
+  active: boolean;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Decrypt a webhook row's encrypted secret into a WebhookRecord with a plaintext `secret` field.
+ */
+function decryptWebhookRow(row: typeof webhooks.$inferSelect): WebhookRecord {
+  let secret: string | null = null;
+  if (row.encryptedSecret && row.secretIv && row.secretAuthTag) {
+    secret = decrypt(row.encryptedSecret, row.secretIv, row.secretAuthTag);
+  }
+  return {
+    id: row.id,
+    url: row.url,
+    workspaceId: row.workspaceId ?? null,
+    events: row.events as string[],
+    secret,
+    description: row.description ?? null,
+    active: row.active,
+    createdBy: row.createdBy ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 export interface CreateWebhookInput {
   url: string;
   events: WebhookEvent[];
@@ -26,27 +62,45 @@ export interface CreateWebhookInput {
   description?: string;
 }
 
-export async function createWebhook(input: CreateWebhookInput, createdBy?: string) {
+export async function createWebhook(
+  input: CreateWebhookInput,
+  createdBy?: string,
+): Promise<WebhookRecord> {
+  let encryptedSecret: Buffer | null = null;
+  let secretIv: Buffer | null = null;
+  let secretAuthTag: Buffer | null = null;
+
+  if (input.secret) {
+    const { encrypted, iv, authTag } = encrypt(input.secret);
+    encryptedSecret = encrypted;
+    secretIv = iv;
+    secretAuthTag = authTag;
+  }
+
   const [webhook] = await db
     .insert(webhooks)
     .values({
       url: input.url,
       events: input.events,
-      secret: input.secret ?? null,
+      encryptedSecret,
+      secretIv,
+      secretAuthTag,
       description: input.description ?? null,
       createdBy: createdBy ?? null,
     })
     .returning();
-  return webhook;
+  return decryptWebhookRow(webhook);
 }
 
-export async function listWebhooks() {
-  return db.select().from(webhooks).orderBy(desc(webhooks.createdAt));
+export async function listWebhooks(): Promise<WebhookRecord[]> {
+  const rows = await db.select().from(webhooks).orderBy(desc(webhooks.createdAt));
+  return rows.map(decryptWebhookRow);
 }
 
-export async function getWebhook(id: string) {
+export async function getWebhook(id: string): Promise<WebhookRecord | null> {
   const [webhook] = await db.select().from(webhooks).where(eq(webhooks.id, id));
-  return webhook ?? null;
+  if (!webhook) return null;
+  return decryptWebhookRow(webhook);
 }
 
 export async function deleteWebhook(id: string) {
@@ -161,7 +215,7 @@ function isSlackWebhook(url: string): boolean {
  * Returns the delivery record.
  */
 export async function deliverWebhook(
-  webhook: typeof webhooks.$inferSelect,
+  webhook: WebhookRecord,
   event: WebhookEvent,
   data: Record<string, unknown>,
   attempt: number = 1,
@@ -235,11 +289,13 @@ export async function deliverWebhook(
 /**
  * Find all active webhooks subscribed to an event and dispatch delivery jobs.
  */
-export async function getWebhooksForEvent(event: WebhookEvent) {
+export async function getWebhooksForEvent(event: WebhookEvent): Promise<WebhookRecord[]> {
   const allWebhooks = await db.select().from(webhooks).where(eq(webhooks.active, true));
 
-  return allWebhooks.filter((w) => {
-    const events = w.events as string[];
-    return events.includes(event);
-  });
+  return allWebhooks
+    .filter((w) => {
+      const events = w.events as string[];
+      return events.includes(event);
+    })
+    .map(decryptWebhookRow);
 }

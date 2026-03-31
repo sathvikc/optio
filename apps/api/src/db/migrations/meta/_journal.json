@@ -260,6 +260,13 @@
       "when": 1776096000000,
       "tag": "0036_review_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1776182400000,
+      "tag": "0037_encrypt_webhook_slack_secrets",
+      "breakpoints": true
     }
   ]
 }

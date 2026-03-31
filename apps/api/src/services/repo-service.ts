@@ -1,6 +1,7 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { repos, workspaces } from "../db/schema.js";
+import { encrypt, decrypt } from "./secret-service.js";
 import { normalizeRepoUrl } from "@optio/shared";
 
 export interface RepoRecord {
@@ -51,18 +52,38 @@ export interface RepoRecord {
   updatedAt: Date;
 }
 
-export async function listRepos(workspaceId?: string | null): Promise<RepoRecord[]> {
-  if (workspaceId) {
-    return db.select().from(repos).where(eq(repos.workspaceId, workspaceId)) as Promise<
-      RepoRecord[]
-    >;
+/**
+ * Decrypt the encrypted Slack webhook URL from a raw DB row and map to RepoRecord shape.
+ */
+function decryptRepoRow(row: typeof repos.$inferSelect): RepoRecord {
+  let slackWebhookUrl: string | null = null;
+  if (row.encryptedSlackWebhookUrl && row.slackWebhookUrlIv && row.slackWebhookUrlAuthTag) {
+    slackWebhookUrl = decrypt(
+      row.encryptedSlackWebhookUrl,
+      row.slackWebhookUrlIv,
+      row.slackWebhookUrlAuthTag,
+    );
   }
-  return db.select().from(repos) as Promise<RepoRecord[]>;
+  const {
+    encryptedSlackWebhookUrl: _e,
+    slackWebhookUrlIv: _iv,
+    slackWebhookUrlAuthTag: _tag,
+    ...rest
+  } = row;
+  return { ...rest, slackWebhookUrl } as RepoRecord;
+}
+
+export async function listRepos(workspaceId?: string | null): Promise<RepoRecord[]> {
+  const rows = workspaceId
+    ? await db.select().from(repos).where(eq(repos.workspaceId, workspaceId))
+    : await db.select().from(repos);
+  return rows.map(decryptRepoRow);
 }
 
 export async function getRepo(id: string): Promise<RepoRecord | null> {
   const [repo] = await db.select().from(repos).where(eq(repos.id, id));
-  return (repo as RepoRecord) ?? null;
+  if (!repo) return null;
+  return decryptRepoRow(repo);
 }
 
 async function getDefaultWorkspaceId(): Promise<string | null> {
@@ -90,7 +111,7 @@ export async function getRepoByUrl(
         .select()
         .from(repos)
         .where(and(eq(repos.repoUrl, normalized), eq(repos.workspaceId, defaultWsId)));
-      if (repo) return repo as RepoRecord;
+      if (repo) return decryptRepoRow(repo);
     }
     conditions.push(isNull(repos.workspaceId));
   }
@@ -98,7 +119,8 @@ export async function getRepoByUrl(
     .select()
     .from(repos)
     .where(and(...conditions));
-  return (repo as RepoRecord) ?? null;
+  if (!repo) return null;
+  return decryptRepoRow(repo);
 }
 
 export async function createRepo(data: {
@@ -131,7 +153,7 @@ export async function createRepo(data: {
       },
     })
     .returning();
-  return repo as RepoRecord;
+  return decryptRepoRow(repo);
 }
 
 export async function updateRepo(
@@ -174,12 +196,26 @@ export async function updateRepo(
     dockerInDocker?: boolean;
   },
 ): Promise<RepoRecord | null> {
-  const [repo] = await db
-    .update(repos)
-    .set({ ...data, updatedAt: new Date() })
-    .where(eq(repos.id, id))
-    .returning();
-  return (repo as RepoRecord) ?? null;
+  // Extract slackWebhookUrl for encryption; pass everything else through
+  const { slackWebhookUrl, ...restData } = data;
+  const setData: Record<string, unknown> = { ...restData, updatedAt: new Date() };
+
+  if (slackWebhookUrl !== undefined) {
+    if (slackWebhookUrl === null) {
+      setData.encryptedSlackWebhookUrl = null;
+      setData.slackWebhookUrlIv = null;
+      setData.slackWebhookUrlAuthTag = null;
+    } else {
+      const { encrypted, iv, authTag } = encrypt(slackWebhookUrl);
+      setData.encryptedSlackWebhookUrl = encrypted;
+      setData.slackWebhookUrlIv = iv;
+      setData.slackWebhookUrlAuthTag = authTag;
+    }
+  }
+
+  const [repo] = await db.update(repos).set(setData).where(eq(repos.id, id)).returning();
+  if (!repo) return null;
+  return decryptRepoRow(repo);
 }
 
 export async function deleteRepo(id: string): Promise<void> {

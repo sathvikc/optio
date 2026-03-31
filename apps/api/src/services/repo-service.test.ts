@@ -21,6 +21,18 @@ vi.mock("../db/schema.js", () => ({
   },
 }));
 
+vi.mock("./secret-service.js", () => ({
+  encrypt: vi.fn().mockImplementation((plaintext: string) => ({
+    encrypted: Buffer.from(`enc:${plaintext}`),
+    iv: Buffer.from("mock-iv-1234567"),
+    authTag: Buffer.from("mock-auth-tag12"),
+  })),
+  decrypt: vi.fn().mockImplementation((encrypted: Buffer) => {
+    const str = encrypted.toString();
+    return str.startsWith("enc:") ? str.slice(4) : str;
+  }),
+}));
+
 import { db } from "../db/client.js";
 import {
   listRepos,
@@ -44,7 +56,8 @@ describe("repo-service", () => {
       });
 
       const result = await listRepos();
-      expect(result).toEqual(repos);
+      expect(result).toMatchObject(repos);
+      expect(result[0].slackWebhookUrl).toBeNull();
     });
 
     it("filters by workspaceId", async () => {
@@ -56,7 +69,7 @@ describe("repo-service", () => {
       });
 
       const result = await listRepos("ws-1");
-      expect(result).toEqual(repos);
+      expect(result).toMatchObject(repos);
     });
   });
 
@@ -70,7 +83,8 @@ describe("repo-service", () => {
       });
 
       const result = await getRepo("r-1");
-      expect(result).toEqual(repo);
+      expect(result).toMatchObject(repo);
+      expect(result!.slackWebhookUrl).toBeNull();
     });
 
     it("returns null when not found", async () => {
@@ -95,7 +109,7 @@ describe("repo-service", () => {
       });
 
       const result = await getRepoByUrl("https://github.com/o/r.git", "ws-1");
-      expect(result).toEqual(repo);
+      expect(result).toMatchObject(repo);
     });
 
     it("returns null when not found", async () => {
@@ -185,7 +199,7 @@ describe("repo-service", () => {
       });
 
       const result = await updateRepo("r-1", { autoMerge: true });
-      expect(result!.autoMerge).toBe(true);
+      expect(result).toMatchObject({ id: "r-1", autoMerge: true });
     });
 
     it("returns null when repo not found", async () => {
