@@ -92,13 +92,25 @@ export async function setupRoutes(app: FastifyInstance) {
       const opencodeEnabled = process.env.OPTIO_OPENCODE_ENABLED === "true";
       const opencodeConfigured = opencodeEnabled && (hasAnthropicKey || hasOpenAIKey);
 
+      // Check for Gemini API key or Vertex AI mode
+      const hasGeminiKey = secretNames.includes("GEMINI_API_KEY");
+      let hasGeminiVertexAi = false;
+      try {
+        const geminiAuthMode = await retrieveSecret("GEMINI_AUTH_MODE").catch(() => null);
+        if (geminiAuthMode === "vertex-ai") {
+          hasGeminiVertexAi = true;
+        }
+      } catch {}
+
       const hasAnyAgentKey =
         hasAnthropicKey ||
         hasOpenAIKey ||
         usingSubscription ||
         hasOauthToken ||
         hasCodexAppServer ||
-        hasCopilotToken;
+        hasCopilotToken ||
+        hasGeminiKey ||
+        hasGeminiVertexAi;
 
       let runtimeHealthy = false;
       try {
@@ -121,6 +133,7 @@ export async function setupRoutes(app: FastifyInstance) {
             done: opencodeConfigured,
             label: "OpenCode configured (experimental)",
           },
+          geminiKey: { done: hasGeminiKey || hasGeminiVertexAi, label: "Google Gemini API key" },
           anyAgentKey: { done: hasAnyAgentKey, label: "At least one agent API key" },
         },
       });
@@ -282,6 +295,36 @@ export async function setupRoutes(app: FastifyInstance) {
         }
       } catch (err) {
         app.log.error(err, "OpenAI key validation failed");
+        reply.send({ valid: false, error: sanitizeError(err) });
+      }
+    },
+  );
+
+  // Validate a Google Gemini API key
+  app.post(
+    "/api/setup/validate/gemini-key",
+    {
+      config: { rateLimit: SETUP_POST_RATE_LIMIT },
+      preHandler: [requireAdminWhenAuthenticated],
+    },
+    async (req, reply) => {
+      const geminiParsed = keySchema.safeParse(req.body);
+      if (!geminiParsed.success)
+        return reply.status(400).send({ valid: false, error: "Key is required" });
+      const { key } = geminiParsed.data;
+
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
+        );
+        if (res.ok) {
+          reply.send({ valid: true });
+        } else {
+          const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+          reply.send({ valid: false, error: body.error?.message ?? `API returned ${res.status}` });
+        }
+      } catch (err) {
+        app.log.error(err, "Gemini key validation failed");
         reply.send({ valid: false, error: sanitizeError(err) });
       }
     },

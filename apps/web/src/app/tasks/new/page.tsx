@@ -249,6 +249,7 @@ export default function NewTaskPage() {
               <option value="codex">OpenAI Codex</option>
               <option value="copilot">GitHub Copilot</option>
               <option value="opencode">OpenCode (Experimental)</option>
+              <option value="gemini">Google Gemini</option>
             </select>
           </div>
         </div>

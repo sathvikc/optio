@@ -376,6 +376,12 @@ export const api = {
       { method: "POST", body: JSON.stringify({ token }) },
     ),
 
+  validateGeminiKey: (key: string) =>
+    request<{ valid: boolean; error?: string }>("/api/setup/validate/gemini-key", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+
   validateRepo: (repoUrl: string, token?: string) =>
     request<{
       valid: boolean;

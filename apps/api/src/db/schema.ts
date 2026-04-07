@@ -223,6 +223,8 @@ export const repos = pgTable(
     opencodeModel: text("opencode_model"), // e.g. "anthropic/claude-sonnet-4", null = OpenCode default
     opencodeAgent: text("opencode_agent"), // e.g. "build", "plan", null = default
     opencodeProvider: text("opencode_provider"), // "anthropic" | "openai" | ... for default provider inference
+    geminiModel: text("gemini_model").default("gemini-2.5-pro"),
+    geminiApprovalMode: text("gemini_approval_mode").default("yolo"), // "default" | "auto_edit" | "yolo"
     maxTurnsCoding: integer("max_turns_coding"), // null = use global default (250)
     maxTurnsReview: integer("max_turns_review"), // null = use global default (10)
     autoResume: boolean("auto_resume").notNull().default(false),

@@ -29,6 +29,8 @@ export interface RepoRecord {
   opencodeModel: string | null;
   opencodeAgent: string | null;
   opencodeProvider: string | null;
+  geminiModel: string | null;
+  geminiApprovalMode: string | null;
   maxTurnsCoding: number | null;
   maxTurnsReview: number | null;
   autoResume: boolean;

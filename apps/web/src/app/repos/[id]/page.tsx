@@ -55,6 +55,8 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
   const [claudeEffort, setClaudeEffort] = useState("high");
   const [copilotModel, setCopilotModel] = useState("");
   const [copilotEffort, setCopilotEffort] = useState("");
+  const [geminiModel, setGeminiModel] = useState("gemini-2.5-pro");
+  const [geminiApprovalMode, setGeminiApprovalMode] = useState("yolo");
   const [maxTurnsCoding, setMaxTurnsCoding] = useState(250);
   const [maxTurnsReview, setMaxTurnsReview] = useState(30);
   const [autoResume, setAutoResume] = useState(false);
@@ -128,6 +130,8 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         setClaudeEffort(r.claudeEffort ?? "high");
         setCopilotModel(r.copilotModel ?? "");
         setCopilotEffort(r.copilotEffort ?? "");
+        setGeminiModel(r.geminiModel ?? "gemini-2.5-pro");
+        setGeminiApprovalMode(r.geminiApprovalMode ?? "yolo");
         setMaxTurnsCoding(r.maxTurnsCoding ?? 250);
         setMaxTurnsReview(r.maxTurnsReview ?? 30);
         setReviewEnabled(r.reviewEnabled ?? false);
@@ -197,6 +201,8 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         claudeEffort,
         copilotModel: copilotModel || undefined,
         copilotEffort: copilotEffort || undefined,
+        geminiModel: geminiModel || undefined,
+        geminiApprovalMode: geminiApprovalMode || undefined,
         maxTurnsCoding,
         maxTurnsReview,
         reviewEnabled,
@@ -850,6 +856,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
           <option value="codex">OpenAI Codex</option>
           <option value="copilot">GitHub Copilot</option>
           <option value="opencode">OpenCode (Experimental)</option>
+          <option value="gemini">Google Gemini</option>
         </select>
       </section>
 
@@ -954,6 +961,42 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      {/* Gemini Settings */}
+      <section className="p-5 rounded-xl border border-border/50 bg-bg-card space-y-3">
+        <h2 className="text-sm font-medium">Gemini Settings</h2>
+        <p className="text-xs text-text-muted">
+          Configure Google Gemini model and behavior when using the Gemini agent for this repo.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs text-text-muted mb-1">Model</label>
+            <select
+              value={geminiModel}
+              onChange={(e) => setGeminiModel(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+            >
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+              <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+              <option value="gemini-3-pro">Gemini 3 Pro</option>
+              <option value="gemini-3-flash">Gemini 3 Flash</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-text-muted mb-1">Approval Mode</label>
+            <select
+              value={geminiApprovalMode}
+              onChange={(e) => setGeminiApprovalMode(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+            >
+              <option value="yolo">Yolo (skip all approvals)</option>
+              <option value="auto_edit">Auto Edit</option>
+              <option value="default">Default</option>
             </select>
           </div>
         </div>

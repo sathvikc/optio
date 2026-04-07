@@ -18,6 +18,7 @@ import { parseClaudeEvent } from "../services/agent-event-parser.js";
 import { parseCodexEvent } from "../services/codex-event-parser.js";
 import { parseCopilotEvent } from "../services/copilot-event-parser.js";
 import { parseOpenCodeEvent } from "../services/opencode-event-parser.js";
+import { parseGeminiEvent } from "../services/gemini-event-parser.js";
 import { checkExistingPr } from "../services/pr-detection-service.js";
 import { db } from "../db/client.js";
 import { tasks } from "../db/schema.js";
@@ -236,6 +237,26 @@ export function startTaskWorker() {
                 taskWorkspaceId,
               ).catch(() => null)) as any) ?? undefined)
             : undefined;
+        const geminiAuthMode =
+          ((await retrieveSecretWithFallback("GEMINI_AUTH_MODE", "global", taskWorkspaceId).catch(
+            () => null,
+          )) as any) ?? "api-key";
+        const googleCloudProject =
+          geminiAuthMode === "vertex-ai"
+            ? (((await retrieveSecretWithFallback(
+                "GOOGLE_CLOUD_PROJECT",
+                "global",
+                taskWorkspaceId,
+              ).catch(() => null)) as any) ?? undefined)
+            : undefined;
+        const googleCloudLocation =
+          geminiAuthMode === "vertex-ai"
+            ? (((await retrieveSecretWithFallback(
+                "GOOGLE_CLOUD_LOCATION",
+                "global",
+                taskWorkspaceId,
+              ).catch(() => null)) as any) ?? undefined)
+            : undefined;
         const optioApiUrl = `http://${process.env.API_HOST ?? "host.docker.internal"}:${process.env.API_PORT ?? "4000"}`;
 
         // Load and render prompt template
@@ -298,6 +319,14 @@ export function startTaskWorker() {
           copilotEffort: repoConfig?.copilotEffort ?? undefined,
           opencodeModel: repoConfig?.opencodeModel ?? undefined,
           opencodeAgent: repoConfig?.opencodeAgent ?? undefined,
+          geminiAuthMode,
+          geminiModel: repoConfig?.geminiModel ?? undefined,
+          geminiApprovalMode:
+            (repoConfig?.geminiApprovalMode as "default" | "auto_edit" | "yolo") ?? undefined,
+          maxTurnsCoding: repoConfig?.maxTurnsCoding ?? undefined,
+          maxTurnsReview: repoConfig?.maxTurnsReview ?? undefined,
+          googleCloudProject,
+          googleCloudLocation,
         });
 
         // ── MCP servers & custom skills injection ────────────────────
@@ -618,7 +647,9 @@ export function startTaskWorker() {
                   ? parseCopilotEvent(line, taskId)
                   : task.agentType === "opencode"
                     ? parseOpenCodeEvent(line, taskId)
-                    : parseClaudeEvent(line, taskId);
+                    : task.agentType === "gemini"
+                      ? parseGeminiEvent(line, taskId)
+                      : parseClaudeEvent(line, taskId);
             if (parsed.sessionId && !sessionId) {
               sessionId = parsed.sessionId;
               await taskService.updateTaskSession(taskId, sessionId);
@@ -686,7 +717,9 @@ export function startTaskWorker() {
                 ? parseCopilotEvent(lineBuf, taskId)
                 : task.agentType === "opencode"
                   ? parseOpenCodeEvent(lineBuf, taskId)
-                  : parseClaudeEvent(lineBuf, taskId);
+                  : task.agentType === "gemini"
+                    ? parseGeminiEvent(lineBuf, taskId)
+                    : parseClaudeEvent(lineBuf, taskId);
           for (const entry of parsed.entries) {
             await taskService.appendTaskLog(
               taskId,
@@ -1224,6 +1257,17 @@ export function buildAgentCommand(
         `opencode run --format json${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT"`,
       ];
     }
+    case "gemini": {
+      const geminiModelFlag = env.OPTIO_GEMINI_MODEL
+        ? ` -m ${JSON.stringify(env.OPTIO_GEMINI_MODEL)}`
+        : "";
+      return [
+        `echo "[optio] Running Google Gemini${opts?.isReview ? " (review)" : ""}..."`,
+        `gemini -p "$OPTIO_PROMPT" \\`,
+        `  --output-format stream-json \\`,
+        `  --approval-mode yolo${geminiModelFlag}`,
+      ];
+    }
     default:
       return [`echo "Unknown agent type: ${agentType}" && exit 1`];
   }
@@ -1271,6 +1315,18 @@ export function inferExitCode(agentType: string, logs: string): number {
       const hasFatalError =
         logs.includes("fatal:") || logs.includes("Error: authentication_failed");
       return hasErrorEvent || hasApiErrorEnvelope || hasAuthError || hasModelError || hasFatalError
+        ? 1
+        : 0;
+    }
+    case "gemini": {
+      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
+      const hasAuthError = /GEMINI_API_KEY|GOOGLE_API_KEY|permission denied|unauthorized/i.test(
+        logs,
+      );
+      const hasQuotaError = /quota|resource.?exhausted|rate.?limit/i.test(logs);
+      const hasModelError = /model.*not found|model_not_found|does not exist.*model/i.test(logs);
+      const hasTurnLimit = /turn.?limit|exit code 53/i.test(logs);
+      return hasErrorEvent || hasAuthError || hasQuotaError || hasModelError || hasTurnLimit
         ? 1
         : 0;
     }

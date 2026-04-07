@@ -87,6 +87,14 @@ export default function SetupPage() {
   const [copilotValidated, setCopilotValidated] = useState(false);
   const [copilotError, setCopilotError] = useState("");
 
+  // Step 3b: Gemini
+  const [geminiAuthMode, setGeminiAuthMode] = useState<"api-key" | "vertex-ai">("api-key");
+  const [geminiKey, setGeminiKey] = useState("");
+  const [geminiValidated, setGeminiValidated] = useState(false);
+  const [geminiError, setGeminiError] = useState("");
+  const [geminiVertexProject, setGeminiVertexProject] = useState("");
+  const [geminiVertexLocation, setGeminiVertexLocation] = useState("us-central1");
+
   // Step 4: Repos
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [suggestedRepos, setSuggestedRepos] = useState<
@@ -180,6 +188,9 @@ export default function SetupPage() {
     codexAuthMode === "app-server" ? codexAppServerUrl.trim().length > 0 : openaiValidated;
 
   const copilotReady = copilotValidated;
+
+  const geminiReady =
+    geminiAuthMode === "vertex-ai" ? geminiVertexProject.trim().length > 0 : geminiValidated;
 
   const currentStep = STEPS[step];
 
@@ -275,6 +286,24 @@ export default function SetupPage() {
       }
     } catch (err) {
       setCopilotError(err instanceof Error ? err.message : "Validation failed");
+    }
+    setLoading(false);
+  };
+
+  const validateGemini = async (keyOverride?: string) => {
+    const key = keyOverride ?? geminiKey;
+    if (!key.trim()) return;
+    setLoading(true);
+    setGeminiError("");
+    try {
+      const res = await api.validateGeminiKey(key);
+      if (res.valid) {
+        setGeminiValidated(true);
+      } else {
+        setGeminiError(res.error ?? "Invalid API key");
+      }
+    } catch (err) {
+      setGeminiError(err instanceof Error ? err.message : "Validation failed");
     }
     setLoading(false);
   };
@@ -379,6 +408,20 @@ export default function SetupPage() {
       // Save Copilot token
       if (copilotToken.trim() && copilotValidated) {
         await api.createSecret({ name: "COPILOT_GITHUB_TOKEN", value: copilotToken });
+      }
+      // Save Gemini credentials
+      if (geminiAuthMode === "vertex-ai" && geminiVertexProject.trim()) {
+        await api.createSecret({ name: "GEMINI_AUTH_MODE", value: "vertex-ai" });
+        await api.createSecret({ name: "GOOGLE_CLOUD_PROJECT", value: geminiVertexProject.trim() });
+        if (geminiVertexLocation.trim()) {
+          await api.createSecret({
+            name: "GOOGLE_CLOUD_LOCATION",
+            value: geminiVertexLocation.trim(),
+          });
+        }
+      } else if (geminiKey.trim() && geminiValidated) {
+        await api.createSecret({ name: "GEMINI_AUTH_MODE", value: "api-key" });
+        await api.createSecret({ name: "GEMINI_API_KEY", value: geminiKey });
       }
       goNext();
     } catch (err) {
@@ -1182,6 +1225,135 @@ export default function SetupPage() {
                 </div>
               </div>
 
+              {/* Gemini */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-text">
+                    Gemini (Google) <span className="text-text-muted font-normal">— optional</span>
+                  </span>
+                  {geminiReady && (
+                    <span className="text-success text-xs flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Ready
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <div className="space-y-2">
+                    <label className="flex items-start gap-2 cursor-pointer p-2 rounded-md hover:bg-bg-hover">
+                      <input
+                        type="radio"
+                        name="gemini-auth-mode"
+                        checked={geminiAuthMode === "api-key"}
+                        onChange={() => setGeminiAuthMode("api-key")}
+                        className="mt-1"
+                      />
+                      <div className="flex-1">
+                        <span className="text-sm font-medium">
+                          Use Gemini API key{" "}
+                          <span className="text-text-muted font-normal">— pay-per-use</span>
+                        </span>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          Get your API key from{" "}
+                          <a
+                            href="https://aistudio.google.com/apikey"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            Google AI Studio
+                          </a>
+                          .
+                        </p>
+                        {geminiAuthMode === "api-key" && (
+                          <div className="mt-2 space-y-2">
+                            <div className="flex gap-2">
+                              <input
+                                type="password"
+                                value={geminiKey}
+                                onChange={(e) => {
+                                  setGeminiKey(e.target.value);
+                                  setGeminiValidated(false);
+                                  setGeminiError("");
+                                }}
+                                onPaste={(e) => {
+                                  const pasted = e.clipboardData.getData("text");
+                                  if (pasted) {
+                                    setGeminiKey(pasted);
+                                    setGeminiValidated(false);
+                                    setGeminiError("");
+                                    setTimeout(() => validateGemini(pasted), 100);
+                                  }
+                                }}
+                                placeholder="AIza..."
+                                className="flex-1 px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
+                              />
+                              <button
+                                onClick={() => validateGemini()}
+                                disabled={loading || !geminiKey.trim() || geminiValidated}
+                                className="px-3 py-2 rounded-md bg-bg-hover text-sm hover:bg-border disabled:opacity-50"
+                              >
+                                {loading ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  "Validate"
+                                )}
+                              </button>
+                            </div>
+                            {geminiError && (
+                              <p className="text-error text-xs flex items-center gap-1">
+                                <AlertCircle className="w-3 h-3" /> {geminiError}
+                              </p>
+                            )}
+                            {geminiValidated && (
+                              <p className="text-success text-xs flex items-center gap-1">
+                                <CheckCircle className="w-3 h-3" /> API key valid
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-2 cursor-pointer p-2 rounded-md hover:bg-bg-hover">
+                      <input
+                        type="radio"
+                        name="gemini-auth-mode"
+                        checked={geminiAuthMode === "vertex-ai"}
+                        onChange={() => setGeminiAuthMode("vertex-ai")}
+                        className="mt-1"
+                      />
+                      <div className="flex-1">
+                        <span className="text-sm font-medium">
+                          Use Vertex AI (ADC){" "}
+                          <span className="text-text-muted font-normal">— GCP workloads</span>
+                        </span>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          Uses Application Default Credentials. Requires a service account with
+                          Vertex AI permissions.
+                        </p>
+                        {geminiAuthMode === "vertex-ai" && (
+                          <div className="mt-2 space-y-2">
+                            <input
+                              type="text"
+                              value={geminiVertexProject}
+                              onChange={(e) => setGeminiVertexProject(e.target.value)}
+                              placeholder="GCP Project ID"
+                              className="w-full px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
+                            />
+                            <input
+                              type="text"
+                              value={geminiVertexLocation}
+                              onChange={(e) => setGeminiVertexLocation(e.target.value)}
+                              placeholder="Location (e.g. us-central1)"
+                              className="w-full px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex items-center justify-between">
                 <button
                   onClick={goBack}
@@ -1191,7 +1363,9 @@ export default function SetupPage() {
                 </button>
                 <button
                   onClick={saveAgentKeysStep}
-                  disabled={(!claudeReady && !codexReady && !copilotReady) || loading}
+                  disabled={
+                    (!claudeReady && !codexReady && !copilotReady && !geminiReady) || loading
+                  }
                   className="flex items-center gap-2 px-5 py-2 rounded-md bg-primary text-white text-sm hover:bg-primary-hover disabled:opacity-50"
                 >
                   {loading ? (
@@ -1622,6 +1796,14 @@ export default function SetupPage() {
                   <div className="flex items-center gap-2 text-sm">
                     <CheckCircle className="w-4 h-4 text-success" />
                     <span>OpenAI Codex: ready</span>
+                  </div>
+                )}
+                {geminiReady && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <CheckCircle className="w-4 h-4 text-success" />
+                    <span>
+                      Google Gemini: {geminiAuthMode === "vertex-ai" ? "Vertex AI" : "API key"}
+                    </span>
                   </div>
                 )}
                 {repos.filter((r) => r.validated).length > 0 && (
