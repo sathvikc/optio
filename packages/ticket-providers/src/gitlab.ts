@@ -6,6 +6,7 @@ import {
   type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
+import { assertSsrfSafe } from "@optio/shared/ssrf";
 import type { TicketProvider } from "./types.js";
 
 export interface GitLabProviderConfig extends TicketProviderConfig {
@@ -54,6 +55,9 @@ export class GitLabTicketProvider implements TicketProvider {
     const allTickets: Ticket[] = [];
     let page = 1;
 
+    // SSRF check: verify the constructed API URL does not target internal addresses
+    await assertSsrfSafe(baseUrl);
+
     while (page <= maxPages) {
       const params = new URLSearchParams({
         labels: label,
@@ -62,7 +66,8 @@ export class GitLabTicketProvider implements TicketProvider {
         page: String(page),
       });
 
-      const res = await fetch(`${baseUrl}/projects/${pid}/issues?${params}`, { headers: hdrs });
+      const fetchUrl = `${baseUrl}/projects/${pid}/issues?${params}`;
+      const res = await fetch(fetchUrl, { headers: hdrs, redirect: "error" });
       if (!res.ok) break;
 
       const issues = (await res.json()) as any[];
@@ -104,10 +109,9 @@ export class GitLabTicketProvider implements TicketProvider {
     const pid = this.projectId(glConfig);
     const hdrs = this.headers(glConfig);
 
-    const res = await fetch(
-      `${baseUrl}/projects/${pid}/issues/${ticketId}/notes?sort=asc&per_page=30`,
-      { headers: hdrs },
-    );
+    const fetchUrl = `${baseUrl}/projects/${pid}/issues/${ticketId}/notes?sort=asc&per_page=30`;
+    await assertSsrfSafe(fetchUrl);
+    const res = await fetch(fetchUrl, { headers: hdrs, redirect: "error" });
     if (!res.ok) return [];
 
     const notes = (await res.json()) as any[];
@@ -126,10 +130,13 @@ export class GitLabTicketProvider implements TicketProvider {
     const pid = this.projectId(glConfig);
     const hdrs = this.headers(glConfig);
 
-    await fetch(`${baseUrl}/projects/${pid}/issues/${ticketId}/notes`, {
+    const fetchUrl = `${baseUrl}/projects/${pid}/issues/${ticketId}/notes`;
+    await assertSsrfSafe(fetchUrl);
+    await fetch(fetchUrl, {
       method: "POST",
       headers: hdrs,
       body: JSON.stringify({ body: comment }),
+      redirect: "error",
     });
   }
 
@@ -144,10 +151,13 @@ export class GitLabTicketProvider implements TicketProvider {
     const hdrs = this.headers(glConfig);
 
     const stateEvent = state === "closed" ? "close" : "reopen";
-    await fetch(`${baseUrl}/projects/${pid}/issues/${ticketId}`, {
+    const fetchUrl = `${baseUrl}/projects/${pid}/issues/${ticketId}`;
+    await assertSsrfSafe(fetchUrl);
+    await fetch(fetchUrl, {
       method: "PUT",
       headers: hdrs,
       body: JSON.stringify({ state_event: stateEvent }),
+      redirect: "error",
     });
   }
 }

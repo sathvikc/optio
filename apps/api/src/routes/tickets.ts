@@ -8,14 +8,88 @@ import { TaskState } from "@optio/shared";
 import * as taskService from "../services/task-service.js";
 import { syncAllTickets } from "../services/ticket-sync-service.js";
 import { storeSecret, deleteSecret } from "../services/secret-service.js";
+import { isSsrfSafeUrl, isSsrfSafeHost } from "../utils/ssrf.js";
 import { HmacSha256Verifier } from "../services/crypto/signer.js";
 import { logger } from "../logger.js";
 
-const createProviderSchema = z.object({
-  source: z.string().min(1),
-  config: z.record(z.unknown()),
+// ── Zod schema for ticket provider config ───────────────────────────────────
+
+const jiraConfigSchema = z.object({
+  source: z.literal("jira"),
+  config: z.object({
+    baseUrl: z.string().url().refine(isSsrfSafeUrl, {
+      message: "URL must not target private or internal addresses",
+    }),
+    email: z.string().email(),
+    apiToken: z.string().min(1),
+    projectKey: z.string().optional(),
+    label: z.string().optional(),
+    maxPages: z.number().int().positive().optional(),
+    doneStatusName: z.string().optional(),
+    todoStatusName: z.string().optional(),
+  }),
   enabled: z.boolean().optional(),
 });
+
+const gitlabConfigSchema = z.object({
+  source: z.literal("gitlab"),
+  config: z.object({
+    host: z.string().min(1).refine(isSsrfSafeHost, {
+      message: "Host must not target private or internal addresses",
+    }),
+    token: z.string().min(1),
+    projectPath: z.string().min(1),
+    label: z.string().optional(),
+    maxPages: z.number().int().positive().optional(),
+  }),
+  enabled: z.boolean().optional(),
+});
+
+const githubConfigSchema = z.object({
+  source: z.literal("github"),
+  config: z.object({
+    token: z.string().optional(),
+    owner: z.string().optional(),
+    repo: z.string().optional(),
+    label: z.string().optional(),
+    maxPages: z.number().int().positive().optional(),
+  }),
+  enabled: z.boolean().optional(),
+});
+
+const linearConfigSchema = z.object({
+  source: z.literal("linear"),
+  config: z.object({
+    apiKey: z.string().min(1),
+    teamId: z.string().optional(),
+    projectId: z.string().optional(),
+    label: z.string().optional(),
+    maxPages: z.number().int().positive().optional(),
+  }),
+  enabled: z.boolean().optional(),
+});
+
+const notionConfigSchema = z.object({
+  source: z.literal("notion"),
+  config: z.object({
+    apiKey: z.string().min(1),
+    databaseId: z.string().min(1),
+    label: z.string().optional(),
+    statusProperty: z.string().optional(),
+    doneValue: z.string().optional(),
+    titleProperty: z.string().optional(),
+    maxPages: z.number().int().positive().optional(),
+  }),
+  enabled: z.boolean().optional(),
+});
+
+export const ticketProviderConfigSchema = z.discriminatedUnion("source", [
+  jiraConfigSchema,
+  gitlabConfigSchema,
+  githubConfigSchema,
+  linearConfigSchema,
+  notionConfigSchema,
+]);
 
 const idParamsSchema = z.object({ id: z.string() });
 
@@ -79,15 +153,17 @@ export async function ticketRoutes(app: FastifyInstance) {
 
   // Configure a ticket provider
   app.post("/api/tickets/providers", async (req, reply) => {
-    const parsed = createProviderSchema.safeParse(req.body);
+    const parsed = ticketProviderConfigSchema.safeParse(req.body);
     if (!parsed.success) {
-      return reply.status(400).send({ error: parsed.error.issues[0].message });
+      return reply
+        .status(400)
+        .send({ error: "Invalid provider config", details: parsed.error.flatten() });
     }
     const body = parsed.data;
 
     // Separate sensitive fields from config — they go into encrypted secrets
     const sensitiveFields = SENSITIVE_PROVIDER_FIELDS[body.source] ?? [];
-    const safeConfig = { ...body.config };
+    const safeConfig: Record<string, unknown> = { ...body.config };
     const sensitiveValues: Record<string, string> = {};
 
     for (const field of sensitiveFields) {

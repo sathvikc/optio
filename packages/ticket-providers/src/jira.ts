@@ -7,6 +7,7 @@ import {
   type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
+import { assertSsrfSafe } from "@optio/shared/ssrf";
 import type { TicketProvider } from "./types.js";
 
 /**
@@ -59,6 +60,7 @@ export class JiraTicketProvider implements TicketProvider {
 
   async fetchActionableTickets(config: TicketProviderConfig): Promise<Ticket[]> {
     const jiraConfig = asJiraConfig(config);
+    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
       authentication: {
@@ -160,6 +162,7 @@ export class JiraTicketProvider implements TicketProvider {
     config: TicketProviderConfig,
   ): Promise<TicketComment[]> {
     const jiraConfig = asJiraConfig(config);
+    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
       authentication: {
@@ -185,6 +188,7 @@ export class JiraTicketProvider implements TicketProvider {
 
   async addComment(ticketId: string, comment: string, config: TicketProviderConfig): Promise<void> {
     const jiraConfig = asJiraConfig(config);
+    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
       authentication: {
@@ -221,6 +225,7 @@ export class JiraTicketProvider implements TicketProvider {
     config: TicketProviderConfig,
   ): Promise<void> {
     const jiraConfig = asJiraConfig(config);
+    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
       authentication: {
