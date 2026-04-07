@@ -1,0 +1,85 @@
+{{/*
+Redis TLS certificate and auth password secrets.
+
+Certificates and passwords are generated once at install time and preserved
+across helm upgrades via `lookup`. This prevents unnecessary Redis restarts
+and TLS renegotiations on every upgrade.
+*/}}
+
+{{- if .Values.redis.enabled }}
+
+{{/* ── TLS certificate Secret ────────────────────────────────────────── */}}
+{{- if .Values.redis.tls.enabled }}
+{{- if .Values.redis.tls.autoGenerateCert }}
+{{- $existing := lookup "v1" "Secret" .Values.namespace (printf "%s-redis-tls" .Release.Name) }}
+{{- if $existing }}
+{{/* Secret already exists — emit it unchanged so Helm tracks it */}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-redis-tls
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: redis
+    {{- include "optio.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ index $existing.data "tls.crt" }}
+  tls.key: {{ index $existing.data "tls.key" }}
+  ca.crt: {{ index $existing.data "ca.crt" }}
+{{- else }}
+{{/* First install — generate a self-signed CA and server cert */}}
+{{- $svcName := printf "%s-redis" .Release.Name }}
+{{- $svcFQDN := printf "%s-redis.%s.svc" .Release.Name .Values.namespace }}
+{{- $ca := genCA "optio-redis-ca" 3650 }}
+{{- $cert := genSignedCert $svcName nil (list $svcName $svcFQDN "localhost") 3650 $ca }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-redis-tls
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: redis
+    {{- include "optio.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+---
+
+{{/* ── Redis auth password Secret ────────────────────────────────────── */}}
+{{- if .Values.redis.auth.enabled }}
+{{- $existingAuth := lookup "v1" "Secret" .Values.namespace (printf "%s-redis-auth" .Release.Name) }}
+{{- if $existingAuth }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-redis-auth
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: redis
+    {{- include "optio.labels" . | nindent 4 }}
+type: Opaque
+data:
+  REDIS_PASSWORD: {{ index $existingAuth.data "REDIS_PASSWORD" }}
+{{- else }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-redis-auth
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: redis
+    {{- include "optio.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  REDIS_PASSWORD: {{ default (randAlphaNum 32) .Values.redis.auth.password | quote }}
+{{- end }}
+{{- end }}
+
+{{- end }}

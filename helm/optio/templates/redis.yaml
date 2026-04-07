@@ -31,10 +31,56 @@ spec:
             capabilities:
               drop:
                 - ALL
+          {{- if or .Values.redis.tls.enabled .Values.redis.auth.enabled }}
+          args:
+            - redis-server
+            {{- if .Values.redis.tls.enabled }}
+            - --tls-port
+            - "6379"
+            - --port
+            - "0"
+            - --tls-cert-file
+            - /etc/redis-tls/tls.crt
+            - --tls-key-file
+            - /etc/redis-tls/tls.key
+            - --tls-ca-cert-file
+            - /etc/redis-tls/ca.crt
+            - --tls-protocols
+            - "TLSv1.3"
+            {{- end }}
+            {{- if .Values.redis.auth.enabled }}
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            {{- end }}
+          {{- end }}
+          {{- if .Values.redis.auth.enabled }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-redis-auth
+                  key: REDIS_PASSWORD
+          {{- end }}
           ports:
             - containerPort: 6379
+          {{- if .Values.redis.tls.enabled }}
+          volumeMounts:
+            - name: redis-tls
+              mountPath: /etc/redis-tls
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
+      {{- if .Values.redis.tls.enabled }}
+      volumes:
+        - name: redis-tls
+          secret:
+            {{- if and .Values.redis.tls.existingSecret (not .Values.redis.tls.autoGenerateCert) }}
+            secretName: {{ .Values.redis.tls.existingSecret }}
+            {{- else }}
+            secretName: {{ .Release.Name }}-redis-tls
+            {{- end }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

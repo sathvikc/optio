@@ -2,6 +2,7 @@ import { assertMinOpenSSL } from "./openssl-check.js";
 import Fastify, { type FastifyError } from "fastify";
 import { Redis } from "ioredis";
 import cors from "@fastify/cors";
+import { redisConnectionUrl, redisTlsOptions } from "./services/redis-config.js";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
@@ -66,12 +67,11 @@ export async function buildServer() {
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
-  const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
   await app.register(rateLimit, {
     max: 100,
     timeWindow: "1 minute",
     allowList: ["127.0.0.1", "::1"],
-    redis: new Redis(redisUrl),
+    redis: new Redis(redisConnectionUrl, { tls: redisTlsOptions }),
   });
   await app.register(formbody);
   await app.register(websocket, {

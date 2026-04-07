@@ -7,12 +7,9 @@ import {
   type WebhookEvent,
 } from "../services/webhook-service.js";
 
-const redisConnection = {
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
-  maxRetriesPerRequest: null,
-};
+import { getBullMQConnectionOptions } from "../services/redis-config.js";
 
-const webhookQueue = new Queue("webhooks", { connection: redisConnection });
+const webhookQueue = new Queue("webhooks", { connection: getBullMQConnectionOptions() });
 
 /**
  * Enqueue a webhook delivery job for all active webhooks that subscribe to the event.
@@ -69,7 +66,7 @@ export function startWebhookWorker() {
       );
     },
     {
-      connection: redisConnection,
+      connection: getBullMQConnectionOptions(),
       concurrency: 10,
     },
   );

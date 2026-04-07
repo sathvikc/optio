@@ -67,6 +67,11 @@ spec:
               mountPath: /etc/optio
               readOnly: true
             {{- end }}
+            {{- if and .Values.redis.enabled .Values.redis.tls.enabled }}
+            - name: redis-tls-ca
+              mountPath: /etc/redis-tls
+              readOnly: true
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Release.Name }}-config
@@ -87,6 +92,13 @@ spec:
               value: {{ .Values.api.env.LOG_LEVEL | quote }}
             - name: OPTIO_ENVOY_IMAGE
               value: "{{ .Values.agent.envoyProxy.image.repository }}:{{ .Values.agent.envoyProxy.image.tag }}"
+            {{- if and .Values.redis.enabled .Values.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-redis-auth
+                  key: REDIS_PASSWORD
+            {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           readinessProbe:
@@ -111,6 +123,18 @@ spec:
             items:
               - key: ca.crt
                 path: pg-ca.crt
+        {{- end }}
+        {{- if and .Values.redis.enabled .Values.redis.tls.enabled }}
+        - name: redis-tls-ca
+          secret:
+            {{- if and .Values.redis.tls.existingSecret (not .Values.redis.tls.autoGenerateCert) }}
+            secretName: {{ .Values.redis.tls.existingSecret }}
+            {{- else }}
+            secretName: {{ .Release.Name }}-redis-tls
+            {{- end }}
+            items:
+              - key: ca.crt
+                path: ca.crt
         {{- end }}
 ---
 apiVersion: v1

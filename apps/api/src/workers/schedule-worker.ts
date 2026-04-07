@@ -5,10 +5,9 @@ import * as taskService from "../services/task-service.js";
 import { taskQueue } from "./task-worker.js";
 import { logger } from "../logger.js";
 
-const connectionOpts = {
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
-  maxRetriesPerRequest: null,
-};
+import { getBullMQConnectionOptions } from "../services/redis-config.js";
+
+const connectionOpts = getBullMQConnectionOptions();
 
 export const scheduleCheckerQueue = new Queue("schedule-checker", { connection: connectionOpts });
 

@@ -1,13 +1,12 @@
 import { Redis } from "ioredis";
 import type { WsEvent } from "@optio/shared";
-
-const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
+import { redisConnectionUrl, redisTlsOptions } from "./redis-config.js";
 
 let publisher: Redis | null = null;
 
 function getPublisher(): Redis {
   if (!publisher) {
-    publisher = new Redis(redisUrl);
+    publisher = new Redis(redisConnectionUrl, { tls: redisTlsOptions });
   }
   return publisher;
 }
@@ -34,5 +33,5 @@ export function getRedisClient(): Redis {
 }
 
 export function createSubscriber(): Redis {
-  return new Redis(redisUrl);
+  return new Redis(redisConnectionUrl, { tls: redisTlsOptions });
 }

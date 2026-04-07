@@ -14,10 +14,9 @@ import * as taskService from "../services/task-service.js";
 import { cleanupExpiredSessions } from "../services/session-service.js";
 import { logger } from "../logger.js";
 
-const connectionOpts = {
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
-  maxRetriesPerRequest: null,
-};
+import { getBullMQConnectionOptions } from "../services/redis-config.js";
+
+const connectionOpts = getBullMQConnectionOptions();
 
 export const repoCleanupQueue = new Queue("repo-cleanup", { connection: connectionOpts });
 

@@ -26,10 +26,13 @@ Database URL
 
 {{/*
 Redis URL
+Scheme: rediss:// when TLS is enabled, redis:// otherwise.
+Auth: embeds password when redis.auth.enabled (password resolved at runtime via env).
 */}}
 {{- define "optio.redisUrl" -}}
 {{- if .Values.redis.enabled -}}
-redis://{{ .Release.Name }}-redis:6379
+  {{- $scheme := ternary "rediss" "redis" .Values.redis.tls.enabled -}}
+  {{- $scheme -}}://{{ .Release.Name }}-redis:6379
 {{- else -}}
 {{- required "externalRedis.url is required when redis.enabled=false" .Values.externalRedis.url -}}
 {{- end -}}

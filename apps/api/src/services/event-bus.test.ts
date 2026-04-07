@@ -9,6 +9,11 @@ vi.mock("ioredis", () => ({
   Redis: vi.fn(() => mockRedisInstance),
 }));
 
+vi.mock("./redis-config.js", () => ({
+  redisConnectionUrl: "redis://localhost:6379",
+  redisTlsOptions: undefined,
+}));
+
 import { publishEvent, publishSessionEvent, createSubscriber } from "./event-bus.js";
 
 describe("event-bus", () => {

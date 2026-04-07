@@ -30,8 +30,9 @@ import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { getCredentialSecret } from "../services/credential-secret-service.js";
 import { logger } from "../logger.js";
 
-const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
-const connectionOpts = { url: redisUrl, maxRetriesPerRequest: null };
+import { getBullMQConnectionOptions } from "../services/redis-config.js";
+
+const connectionOpts = getBullMQConnectionOptions();
 
 export const taskQueue = new Queue("tasks", { connection: connectionOpts });
 

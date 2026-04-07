@@ -12,10 +12,9 @@ import { updateSessionPr } from "../services/interactive-session-service.js";
 import { taskQueue } from "./task-worker.js";
 import { logger } from "../logger.js";
 
-const connectionOpts = {
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
-  maxRetriesPerRequest: null,
-};
+import { getBullMQConnectionOptions } from "../services/redis-config.js";
+
+const connectionOpts = getBullMQConnectionOptions();
 
 /** Determine overall CI check status from GitHub check runs. */
 export function determineCheckStatus(

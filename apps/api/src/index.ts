@@ -7,13 +7,11 @@ import { startRepoCleanupWorker } from "./workers/repo-cleanup-worker.js";
 import { startPrWatcherWorker } from "./workers/pr-watcher-worker.js";
 import { startWebhookWorker } from "./workers/webhook-worker.js";
 import { startScheduleWorker } from "./workers/schedule-worker.js";
+import { getBullMQConnectionOptions } from "./services/redis-config.js";
 import { logger } from "./logger.js";
 import { logTlsStackInfo, initTlsObservability } from "./services/tls-observability.js";
 
-const redisConnection = {
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
-  maxRetriesPerRequest: null,
-};
+const redisConnection = getBullMQConnectionOptions();
 
 /**
  * Remove all stale repeatable jobs from a queue before re-registering.

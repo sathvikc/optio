@@ -193,6 +193,23 @@ redis:
     limits:
       cpu: 250m
       memory: 256Mi
+  # TLS encryption for in-cluster Redis. Encrypts data in transit (BullMQ job
+  # payloads, pub/sub log streams) with TLSv1.3. Recommended for production.
+  tls:
+    enabled: true
+    # When true, generates a self-signed CA + server cert at install time via
+    # Helm's genSignedCert. Set to false if providing certs externally
+    # (e.g., cert-manager) and populate redis.tls.existingSecret.
+    autoGenerateCert: true
+    # Name of an existing TLS Secret (type kubernetes.io/tls with ca.crt key).
+    # Only used when autoGenerateCert is false.
+    existingSecret: ""
+  # Redis password authentication (requirepass). Strongly recommended alongside TLS.
+  auth:
+    enabled: true
+    # Leave empty to auto-generate a 32-char password at install time.
+    # The password is stored in a K8s Secret and persisted across upgrades.
+    password: ""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # External services (used when built-in PostgreSQL/Redis are disabled)
@@ -204,7 +221,7 @@ externalDatabase:
 
 # REQUIRED when redis.enabled=false
 externalRedis:
-  url: ""  # e.g., redis://host:6379
+  url: ""  # e.g., rediss://:password@host:6379 (use rediss:// for TLS)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public URL
