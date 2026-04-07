@@ -149,7 +149,10 @@ describe("webhook CRUD", () => {
         secret: "my-secret",
       });
 
-      expect(mockEncrypt).toHaveBeenCalledWith("my-secret");
+      expect(mockEncrypt).toHaveBeenCalledWith(
+        "my-secret",
+        Buffer.from("webhook:https://example.com/hook:secret"),
+      );
       expect(result.secret).toBe("my-secret");
       expect(result.id).toBe("wh-1");
     });

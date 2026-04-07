@@ -1,3 +1,4 @@
+import { createCipheriv, randomBytes } from "node:crypto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the database module before importing the service
@@ -16,6 +17,7 @@ vi.mock("../db/schema.js", () => ({
     id: "secrets.id",
     name: "secrets.name",
     scope: "secrets.scope",
+    workspaceId: "secrets.workspace_id",
     encryptedValue: "secrets.encrypted_value",
     iv: "secrets.iv",
     authTag: "secrets.auth_tag",
@@ -30,7 +32,19 @@ import { db } from "../db/client.js";
 const TEST_KEY = "a".repeat(64); // 64-char hex string
 process.env.OPTIO_ENCRYPTION_KEY = TEST_KEY;
 
+/** Simulate legacy encryption: 16-byte IV, no AAD (pre-fix format). */
+function legacyEncrypt(plaintext: string) {
+  const key = Buffer.from(TEST_KEY, "hex");
+  const iv = randomBytes(16);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return { encrypted, iv, authTag: cipher.getAuthTag() };
+}
+
 describe("secret-service", () => {
+  let encrypt: typeof import("./secret-service.js").encrypt;
+  let decrypt: typeof import("./secret-service.js").decrypt;
+  let buildSecretAAD: typeof import("./secret-service.js").buildSecretAAD;
   let storeSecret: typeof import("./secret-service.js").storeSecret;
   let retrieveSecret: typeof import("./secret-service.js").retrieveSecret;
   let listSecrets: typeof import("./secret-service.js").listSecrets;
@@ -40,6 +54,9 @@ describe("secret-service", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     const mod = await import("./secret-service.js");
+    encrypt = mod.encrypt;
+    decrypt = mod.decrypt;
+    buildSecretAAD = mod.buildSecretAAD;
     storeSecret = mod.storeSecret;
     retrieveSecret = mod.retrieveSecret;
     listSecrets = mod.listSecrets;
@@ -75,6 +92,7 @@ describe("secret-service", () => {
 
       expect(capturedEncrypted!).toBeInstanceOf(Buffer);
       expect(capturedIv!).toBeInstanceOf(Buffer);
+      expect(capturedIv!.length).toBe(12); // NIST-recommended 12-byte IV
       expect(capturedAuthTag!).toBeInstanceOf(Buffer);
       expect(capturedEncrypted!.toString("utf8")).not.toBe(secretValue);
 
@@ -159,6 +177,88 @@ describe("secret-service", () => {
       const result = await retrieveSecret("UNICODE");
       expect(result).toBe(unicode);
     });
+
+    it("decrypts legacy secrets encrypted with 16-byte IV and no AAD", async () => {
+      // Simulate a legacy row stored before the AAD migration
+      const { encrypted, iv, authTag } = legacyEncrypt("old-api-key");
+
+      (db.select as any) = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ encryptedValue: encrypted, iv, authTag }]),
+        }),
+      });
+
+      // retrieveSecret should handle legacy 16-byte IV rows gracefully
+      const result = await retrieveSecret("OLD_KEY");
+      expect(result).toBe("old-api-key");
+    });
+  });
+
+  describe("encrypt/decrypt IV and AAD", () => {
+    it("uses 12-byte IV (NIST SP 800-38D recommended)", () => {
+      const { iv } = encrypt("test-value");
+      expect(iv.length).toBe(12);
+    });
+
+    it("encrypts and decrypts with AAD", () => {
+      const aad = Buffer.from("API_KEY|global|global");
+      const { encrypted, iv, authTag } = encrypt("secret-value", aad);
+      const result = decrypt(encrypted, iv, authTag, aad);
+      expect(result).toBe("secret-value");
+    });
+
+    it("fails to decrypt with wrong AAD", () => {
+      const aad = Buffer.from("API_KEY|global|ws-1");
+      const wrongAad = Buffer.from("API_KEY|global|ws-2");
+      const { encrypted, iv, authTag } = encrypt("secret-value", aad);
+      expect(() => decrypt(encrypted, iv, authTag, wrongAad)).toThrow();
+    });
+
+    it("fails to decrypt when AAD is expected but missing", () => {
+      const aad = Buffer.from("API_KEY|global|global");
+      const { encrypted, iv, authTag } = encrypt("secret-value", aad);
+      // Decrypting without AAD on 12-byte IV data should fail
+      expect(() => decrypt(encrypted, iv, authTag)).toThrow();
+    });
+
+    it("handles legacy 16-byte IV data without AAD (backward compat)", () => {
+      const { encrypted, iv, authTag } = legacyEncrypt("legacy-secret");
+      expect(iv.length).toBe(16);
+      // decrypt with AAD provided should still work for 16-byte IV (legacy mode)
+      const aad = Buffer.from("name|scope|global");
+      const result = decrypt(encrypted, iv, authTag, aad);
+      expect(result).toBe("legacy-secret");
+    });
+
+    it("handles legacy 16-byte IV data without any AAD argument", () => {
+      const { encrypted, iv, authTag } = legacyEncrypt("legacy-secret");
+      const result = decrypt(encrypted, iv, authTag);
+      expect(result).toBe("legacy-secret");
+    });
+
+    it("encrypts without AAD when none provided", () => {
+      const { encrypted, iv, authTag } = encrypt("no-aad-value");
+      expect(iv.length).toBe(12);
+      const result = decrypt(encrypted, iv, authTag);
+      expect(result).toBe("no-aad-value");
+    });
+  });
+
+  describe("buildSecretAAD", () => {
+    it("builds AAD from name, scope, and workspaceId", () => {
+      const aad = buildSecretAAD("API_KEY", "global", "ws-123");
+      expect(aad.toString()).toBe("API_KEY|global|ws-123");
+    });
+
+    it("uses 'global' when workspaceId is null", () => {
+      const aad = buildSecretAAD("TOKEN", "repo-scope", null);
+      expect(aad.toString()).toBe("TOKEN|repo-scope|global");
+    });
+
+    it("uses 'global' when workspaceId is undefined", () => {
+      const aad = buildSecretAAD("TOKEN", "repo-scope");
+      expect(aad.toString()).toBe("TOKEN|repo-scope|global");
+    });
   });
 
   describe("storeSecret", () => {
@@ -224,6 +324,22 @@ describe("secret-service", () => {
       await expect(retrieveSecret("KEY", "my-repo")).rejects.toThrow(
         "Secret not found: KEY (scope: my-repo)",
       );
+    });
+
+    it("applies isNull workspace filter for non-global scope without workspaceId", async () => {
+      // Encrypt with appropriate AAD for this context
+      const aad = buildSecretAAD("TOKEN", "repo-scope", null);
+      const { encrypted, iv, authTag } = encrypt("val", aad);
+
+      const whereMock = vi.fn().mockResolvedValue([{ encryptedValue: encrypted, iv, authTag }]);
+      (db.select as any) = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: whereMock }),
+      });
+
+      const result = await retrieveSecret("TOKEN", "repo-scope");
+      expect(result).toBe("val");
+      // The where clause should have been called (with 3 conditions: name, scope, isNull)
+      expect(whereMock).toHaveBeenCalled();
     });
   });
 

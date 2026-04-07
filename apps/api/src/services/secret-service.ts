@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { secrets } from "../db/schema.js";
 import type { SecretRef } from "@optio/shared";
@@ -47,18 +47,37 @@ export function validateEncryptionKey(): void {
   encryptionKey();
 }
 
-export function encrypt(plaintext: string): { encrypted: Buffer; iv: Buffer; authTag: Buffer } {
+/**
+ * Build AAD (Additional Authenticated Data) that binds ciphertext to its
+ * identifying context in the `secrets` table.  Format: `name|scope|workspaceId`.
+ */
+export function buildSecretAAD(name: string, scope: string, workspaceId?: string | null): Buffer {
+  return Buffer.from(`${name}|${scope}|${workspaceId ?? "global"}`);
+}
+
+export function encrypt(
+  plaintext: string,
+  aad?: Buffer,
+): { encrypted: Buffer; iv: Buffer; authTag: Buffer } {
   const key = encryptionKey();
-  const iv = randomBytes(16);
+  const iv = randomBytes(12); // NIST SP 800-38D recommended 12-byte IV
   const cipher = createCipheriv(ALGORITHM, key, iv);
+  if (aad) {
+    cipher.setAAD(aad);
+  }
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return { encrypted, iv, authTag };
 }
 
-export function decrypt(encrypted: Buffer, iv: Buffer, authTag: Buffer): string {
+export function decrypt(encrypted: Buffer, iv: Buffer, authTag: Buffer, aad?: Buffer): string {
   const key = encryptionKey();
   const decipher = createDecipheriv(ALGORITHM, key, iv);
+  // Legacy rows use 16-byte IV without AAD; new rows use 12-byte IV with AAD.
+  // Skip AAD for legacy data to maintain backward compatibility.
+  if (aad && iv.length !== 16) {
+    decipher.setAAD(aad);
+  }
   decipher.setAuthTag(authTag);
   return decipher.update(encrypted).toString("utf8") + decipher.final("utf8");
 }
@@ -69,11 +88,16 @@ export async function storeSecret(
   scope = "global",
   workspaceId?: string | null,
 ): Promise<void> {
-  const { encrypted, iv, authTag } = encrypt(value);
+  const aad = buildSecretAAD(name, scope, workspaceId);
+  const { encrypted, iv, authTag } = encrypt(value, aad);
 
   // Build conditions for lookup
   const conditions = [eq(secrets.name, name), eq(secrets.scope, scope)];
-  if (workspaceId) conditions.push(eq(secrets.workspaceId, workspaceId));
+  if (workspaceId) {
+    conditions.push(eq(secrets.workspaceId, workspaceId));
+  } else if (scope !== "global") {
+    conditions.push(isNull(secrets.workspaceId));
+  }
 
   // Try update first, then insert
   const existing = await db
@@ -104,14 +128,22 @@ export async function retrieveSecret(
   workspaceId?: string | null,
 ): Promise<string> {
   const conditions = [eq(secrets.name, name), eq(secrets.scope, scope)];
-  if (workspaceId) conditions.push(eq(secrets.workspaceId, workspaceId));
+  if (workspaceId) {
+    conditions.push(eq(secrets.workspaceId, workspaceId));
+  } else if (scope !== "global") {
+    // For non-global scopes, always apply a workspace filter to prevent
+    // cross-workspace secret leakage when workspaceId is omitted.
+    conditions.push(isNull(secrets.workspaceId));
+  }
 
   const [secret] = await db
     .select()
     .from(secrets)
     .where(and(...conditions));
   if (!secret) throw new Error(`Secret not found: ${name} (scope: ${scope})`);
-  return decrypt(secret.encryptedValue, secret.iv, secret.authTag);
+
+  const aad = buildSecretAAD(name, scope, workspaceId);
+  return decrypt(secret.encryptedValue, secret.iv, secret.authTag, aad);
 }
 
 export async function listSecrets(

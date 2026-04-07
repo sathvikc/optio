@@ -40,7 +40,8 @@ export interface WebhookRecord {
 function decryptWebhookRow(row: typeof webhooks.$inferSelect): WebhookRecord {
   let secret: string | null = null;
   if (row.encryptedSecret && row.secretIv && row.secretAuthTag) {
-    secret = decrypt(row.encryptedSecret, row.secretIv, row.secretAuthTag);
+    const aad = Buffer.from(`webhook:${row.url}:secret`);
+    secret = decrypt(row.encryptedSecret, row.secretIv, row.secretAuthTag, aad);
   }
   return {
     id: row.id,
@@ -73,7 +74,8 @@ export async function createWebhook(
   let secretAuthTag: Buffer | null = null;
 
   if (input.secret) {
-    const { encrypted, iv, authTag } = encrypt(input.secret);
+    const aad = Buffer.from(`webhook:${input.url}:secret`);
+    const { encrypted, iv, authTag } = encrypt(input.secret, aad);
     encryptedSecret = encrypted;
     secretIv = iv;
     secretAuthTag = authTag;

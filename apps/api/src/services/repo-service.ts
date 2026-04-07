@@ -60,10 +60,12 @@ export interface RepoRecord {
 function decryptRepoRow(row: typeof repos.$inferSelect): RepoRecord {
   let slackWebhookUrl: string | null = null;
   if (row.encryptedSlackWebhookUrl && row.slackWebhookUrlIv && row.slackWebhookUrlAuthTag) {
+    const aad = Buffer.from(`repo:${row.id}:slackWebhookUrl`);
     slackWebhookUrl = decrypt(
       row.encryptedSlackWebhookUrl,
       row.slackWebhookUrlIv,
       row.slackWebhookUrlAuthTag,
+      aad,
     );
   }
   const {
@@ -212,7 +214,8 @@ export async function updateRepo(
       setData.slackWebhookUrlIv = null;
       setData.slackWebhookUrlAuthTag = null;
     } else {
-      const { encrypted, iv, authTag } = encrypt(slackWebhookUrl);
+      const aad = Buffer.from(`repo:${id}:slackWebhookUrl`);
+      const { encrypted, iv, authTag } = encrypt(slackWebhookUrl, aad);
       setData.encryptedSlackWebhookUrl = encrypted;
       setData.slackWebhookUrlIv = iv;
       setData.slackWebhookUrlAuthTag = authTag;
