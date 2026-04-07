@@ -104,7 +104,9 @@ export function parseClaudeEvent(
             : Array.isArray(block.content)
               ? block.content.map((c: any) => c.text ?? c.content ?? "").join("")
               : "";
-        const trimmed = raw.length > 300 ? raw.slice(0, 300) + "…" : raw;
+        // Use a higher limit for structured JSON output (e.g. review drafts)
+        const limit = raw.includes('"verdict"') ? 5000 : 300;
+        const trimmed = raw.length > limit ? raw.slice(0, limit) + "…" : raw;
         if (trimmed.trim()) {
           entries.push({
             taskId,

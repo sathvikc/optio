@@ -1,6 +1,6 @@
 import { eq, desc, and, or, ilike, gte, lte, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { tasks, taskEvents, taskLogs, users } from "../db/schema.js";
+import { tasks, taskEvents, taskLogs, users, reviewDrafts } from "../db/schema.js";
 import { TaskState, transition, normalizeRepoUrl, type CreateTaskInput } from "@optio/shared";
 import { publishEvent } from "./event-bus.js";
 import { logger } from "../logger.js";
@@ -503,6 +503,9 @@ export async function forceRedoTask(id: string) {
 
   // Delete all logs
   await db.delete(taskLogs).where(eq(taskLogs.taskId, id));
+
+  // Reset any associated review draft so stale summaries don't persist
+  await db.delete(reviewDrafts).where(eq(reviewDrafts.taskId, id));
 
   // Record the force-redo event (keep event history for audit)
   const fromState = task.state as TaskState;

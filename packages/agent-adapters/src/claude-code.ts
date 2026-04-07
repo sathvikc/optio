@@ -84,8 +84,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const prMatch = logs.match(/https:\/\/github\.com\/[^\s"]+\/pull\/\d+/);
     const costMatch = logs.match(/"total_cost_usd":\s*([\d.]+)/);
 
-    // Extract error, token usage, and model from Claude's NDJSON events
+    // Extract error, token usage, model, and result text from Claude's NDJSON events
     let error: string | undefined;
+    let resultText: string | undefined;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let model: string | undefined;
@@ -108,9 +109,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           }
         }
 
-        // Extract error from result event
-        if (exitCode !== 0 && event.type === "result" && event.is_error && event.result) {
-          error = event.result;
+        // Extract result text from the final result event
+        if (event.type === "result" && event.result) {
+          if (event.is_error && exitCode !== 0) {
+            error = event.result;
+          } else if (!event.is_error) {
+            resultText = event.result;
+          }
         }
       } catch {
         // Not JSON, skip
@@ -121,6 +126,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       error = `Exit code: ${exitCode}`;
     }
 
+    // Use the agent's actual result text as the summary when available
+    let summary: string;
+    if (exitCode !== 0) {
+      summary = `Agent exited with code ${exitCode}`;
+    } else if (resultText) {
+      // Truncate very long result texts for the summary field
+      summary = resultText.length > 2000 ? resultText.slice(0, 2000) + "…" : resultText;
+    } else {
+      summary = "Agent completed successfully";
+    }
+
     return {
       success: exitCode === 0,
       prUrl: prMatch?.[0],
@@ -128,8 +144,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       inputTokens: totalInputTokens > 0 ? totalInputTokens : undefined,
       outputTokens: totalOutputTokens > 0 ? totalOutputTokens : undefined,
       model,
-      summary:
-        exitCode === 0 ? "Agent completed successfully" : `Agent exited with code ${exitCode}`,
+      summary,
       error,
     };
   }

@@ -56,7 +56,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
   const [copilotModel, setCopilotModel] = useState("");
   const [copilotEffort, setCopilotEffort] = useState("");
   const [maxTurnsCoding, setMaxTurnsCoding] = useState(250);
-  const [maxTurnsReview, setMaxTurnsReview] = useState(10);
+  const [maxTurnsReview, setMaxTurnsReview] = useState(30);
   const [autoResume, setAutoResume] = useState(false);
   const [maxConcurrentTasks, setMaxConcurrentTasks] = useState(2);
   const [maxPodInstances, setMaxPodInstances] = useState(1);
@@ -129,7 +129,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         setCopilotModel(r.copilotModel ?? "");
         setCopilotEffort(r.copilotEffort ?? "");
         setMaxTurnsCoding(r.maxTurnsCoding ?? 250);
-        setMaxTurnsReview(r.maxTurnsReview ?? 10);
+        setMaxTurnsReview(r.maxTurnsReview ?? 30);
         setReviewEnabled(r.reviewEnabled ?? false);
         setReviewTrigger(r.reviewTrigger ?? "on_ci_pass");
         setTestCommand(r.testCommand ?? "");

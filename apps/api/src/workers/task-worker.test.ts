@@ -20,10 +20,10 @@ describe("buildAgentCommand", () => {
       expect(cmds.some((c) => c.includes("--max-turns 250"))).toBe(true);
     });
 
-    it("uses default review max turns (10) when isReview is true", () => {
+    it("uses default review max turns (30) when isReview is true", () => {
       const env = { OPTIO_PROMPT: "Review PR" };
       const cmds = buildAgentCommand("claude-code", env, { isReview: true });
-      expect(cmds.some((c) => c.includes("--max-turns 10"))).toBe(true);
+      expect(cmds.some((c) => c.includes("--max-turns 30"))).toBe(true);
     });
 
     it("respects custom maxTurnsCoding override", () => {

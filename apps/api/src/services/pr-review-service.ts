@@ -370,7 +370,9 @@ export async function parseReviewOutput(taskId: string) {
   const jsonPatterns = [
     // JSON in a code block
     /```(?:json)?\s*\n?(\{[\s\S]*?"verdict"[\s\S]*?\})\s*\n?```/,
-    // Raw JSON object with verdict field
+    // Raw JSON object with verdict field (greedy to capture nested objects like fileComments)
+    /(\{[\s\S]*?"verdict"\s*:\s*"[^"]*"[\s\S]*\})\s*$/m,
+    // Simpler fallback
     /(\{[^{}]*"verdict"\s*:\s*"[^"]*"[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/,
   ];
 
@@ -407,10 +409,14 @@ export async function parseReviewOutput(taskId: string) {
     updates.fileComments = parsed.fileComments;
   }
 
-  // If we couldn't parse structured output, use the task's result summary as fallback
-  if (!parsed) {
+  // If we couldn't parse structured JSON, fall back to the task's result summary
+  // which now contains the agent's actual output text (not just "Agent completed successfully")
+  if (!updates.summary) {
     const task = await taskService.getTask(taskId);
-    if (task?.resultSummary) {
+    if (
+      task?.resultSummary &&
+      !/^Agent (completed successfully|exited with code \d+)$/.test(task.resultSummary)
+    ) {
       updates.summary = task.resultSummary;
     }
   }
@@ -525,7 +531,7 @@ export async function submitReviewToGitHub(draftId: string, userId?: string) {
 
   logger.info({ draftId, prNumber: draft.prNumber, event }, "Review submitted to GitHub");
 
-  return { draft: updated, githubReviewUrl: reviewData.html_url };
+  return { draft: updated, reviewUrl: reviewData.html_url };
 }
 
 // ── Re-review ───────────────────────────────────────────────────────────────

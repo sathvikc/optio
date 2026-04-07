@@ -209,6 +209,7 @@ export const DEFAULT_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistan
 - Review ONLY PR #{{PR_NUMBER}}. Nothing else.
 - Do NOT run \`gh pr list\` or browse other PRs.
 - Your working directory is your worktree. Do not navigate outside it.
+- **You have a limited turn budget.** Focus on the diff and task context. Do not exhaustively explore the entire codebase. Write the review JSON file BEFORE you run out of turns.
 `;
 
 /**

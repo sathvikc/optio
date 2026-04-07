@@ -740,7 +740,7 @@ describe("submitReviewToGitHub", () => {
     const result = await submitReviewToGitHub("draft-1");
 
     expect(result.draft.state).toBe("submitted");
-    expect(result.githubReviewUrl).toContain("pullrequestreview");
+    expect(result.reviewUrl).toContain("pullrequestreview");
 
     // Verify fetch was called with APPROVE event
     expect(mockFetch).toHaveBeenCalledWith(

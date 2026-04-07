@@ -971,7 +971,7 @@ export const api = {
     }),
 
   submitReviewDraft: (taskId: string) =>
-    request<{ draft: any; githubReviewUrl?: string }>(`/api/tasks/${taskId}/review-draft/submit`, {
+    request<{ draft: any; reviewUrl?: string }>(`/api/tasks/${taskId}/review-draft/submit`, {
       method: "POST",
     }),
 
