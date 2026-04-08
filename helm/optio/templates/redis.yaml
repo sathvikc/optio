@@ -47,6 +47,8 @@ spec:
             - /etc/redis-tls/ca.crt
             - --tls-protocols
             - "TLSv1.3"
+            - --tls-auth-clients
+            - "no"
             {{- end }}
             {{- if .Values.redis.auth.enabled }}
             - --requirepass
