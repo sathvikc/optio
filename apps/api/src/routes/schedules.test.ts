@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
+import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
+import { mockTask, mockSchedule } from "../test-utils/fixtures.js";
 
 // ─── Mocks ───
 
@@ -43,28 +44,10 @@ import { scheduleRoutes } from "./schedules.js";
 // ─── Helpers ───
 
 async function buildTestApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
-  app.decorateRequest("user", undefined as any);
-  app.addHook("preHandler", (req, _reply, done) => {
-    (req as any).user = { id: "user-1", workspaceId: "ws-1" };
-    done();
-  });
-  await scheduleRoutes(app);
-  await app.ready();
-  return app;
+  return buildRouteTestApp(scheduleRoutes);
 }
 
-const mockScheduleData = {
-  id: "sched-1",
-  name: "Nightly build",
-  cronExpression: "0 0 * * *",
-  taskConfig: {
-    title: "Build",
-    prompt: "Run build",
-    repoUrl: "https://github.com/org/repo",
-    agentType: "claude-code",
-  },
-};
+const mockScheduleData = { ...mockSchedule };
 
 describe("GET /api/schedules", () => {
   let app: FastifyInstance;
@@ -227,14 +210,14 @@ describe("POST /api/schedules/:id/trigger", () => {
 
   it("manually triggers a schedule", async () => {
     mockGetSchedule.mockResolvedValue(mockScheduleData);
-    mockCreateTask.mockResolvedValue({ id: "task-1", priority: 100, maxRetries: 1 });
+    mockCreateTask.mockResolvedValue({ ...mockTask });
     mockTransitionTask.mockResolvedValue(undefined);
     mockRecordRun.mockResolvedValue(undefined);
 
     const res = await app.inject({ method: "POST", url: "/api/schedules/sched-1/trigger" });
 
     expect(res.statusCode).toBe(200);
-    expect(mockRecordRun).toHaveBeenCalledWith("sched-1", "task-1", "created");
+    expect(mockRecordRun).toHaveBeenCalledWith("sch-1", "task-1", "created");
   });
 
   it("returns 404 for nonexistent schedule", async () => {

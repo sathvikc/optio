@@ -198,6 +198,35 @@ const MIGRATED_ROUTES: MigratedRoute[] = [
   // resume.ts (2)
   { method: "post", path: "/api/tasks/{id}/resume" },
   { method: "post", path: "/api/tasks/{id}/force-restart" },
+
+  // Phase 3 — workflows & scheduling (24 routes)
+  // workflows.ts (12)
+  { method: "get", path: "/api/workflows" },
+  { method: "post", path: "/api/workflows" },
+  { method: "get", path: "/api/workflows/{id}" },
+  { method: "patch", path: "/api/workflows/{id}" },
+  { method: "post", path: "/api/workflows/{id}/clone" },
+  { method: "delete", path: "/api/workflows/{id}" },
+  { method: "post", path: "/api/workflows/{id}/runs" },
+  { method: "get", path: "/api/workflows/{id}/runs" },
+  { method: "get", path: "/api/workflow-runs/{id}" },
+  { method: "post", path: "/api/workflow-runs/{id}/retry" },
+  { method: "post", path: "/api/workflow-runs/{id}/cancel" },
+  { method: "get", path: "/api/workflow-runs/{id}/logs" },
+  // workflow-triggers.ts (4)
+  { method: "get", path: "/api/workflows/{id}/triggers" },
+  { method: "post", path: "/api/workflows/{id}/triggers" },
+  { method: "patch", path: "/api/workflows/{id}/triggers/{triggerId}" },
+  { method: "delete", path: "/api/workflows/{id}/triggers/{triggerId}" },
+  // schedules.ts (8)
+  { method: "get", path: "/api/schedules" },
+  { method: "get", path: "/api/schedules/{id}" },
+  { method: "post", path: "/api/schedules" },
+  { method: "patch", path: "/api/schedules/{id}" },
+  { method: "delete", path: "/api/schedules/{id}" },
+  { method: "post", path: "/api/schedules/{id}/trigger" },
+  { method: "get", path: "/api/schedules/{id}/runs" },
+  { method: "post", path: "/api/schedules/validate-cron" },
 ];
 
 describe("OpenAPI spec — migrated routes are fully documented", () => {
@@ -229,8 +258,8 @@ describe("OpenAPI spec — migrated routes are fully documented", () => {
   }
 
   it("migrated routes count matches the sum of completed phases", () => {
-    // Phase 1 = 14, Phase 2 = 18
-    expect(MIGRATED_ROUTES).toHaveLength(32);
+    // Phase 1 = 14, Phase 2 = 18, Phase 3 = 24
+    expect(MIGRATED_ROUTES).toHaveLength(56);
   });
 
   it("components.schemas contains the Task domain types", () => {

@@ -16,6 +16,15 @@ import {
   SubtaskStatusSchema,
   ActivityItemSchema,
 } from "./task.js";
+import {
+  WorkflowSchema,
+  WorkflowRunSchema,
+  WorkflowTriggerSchema,
+  WorkflowRunLogEntrySchema,
+  ScheduleSchema,
+  ScheduleRunSchema,
+  CronValidationResultSchema,
+} from "./workflow.js";
 
 /**
  * Central registry of named schemas surfaced as `components.schemas` in the
@@ -46,4 +55,11 @@ export const namedSchemas = {
   TaskDependency: TaskDependencySchema,
   SubtaskStatus: SubtaskStatusSchema,
   ActivityItem: ActivityItemSchema,
+  Workflow: WorkflowSchema,
+  WorkflowRun: WorkflowRunSchema,
+  WorkflowTrigger: WorkflowTriggerSchema,
+  WorkflowRunLogEntry: WorkflowRunLogEntrySchema,
+  Schedule: ScheduleSchema,
+  ScheduleRun: ScheduleRunSchema,
+  CronValidationResult: CronValidationResultSchema,
 } as const;

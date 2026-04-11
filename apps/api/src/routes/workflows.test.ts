@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
+import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
+import { mockWorkflow, mockWorkflowRun } from "../test-utils/fixtures.js";
 
 // ─── Mocks ───
 
@@ -42,15 +43,7 @@ import { workflowRoutes } from "./workflows.js";
 // ─── Helpers ───
 
 async function buildTestApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
-  app.decorateRequest("user", undefined as any);
-  app.addHook("preHandler", (req, _reply, done) => {
-    (req as any).user = { id: "user-1", workspaceId: "ws-1" };
-    done();
-  });
-  await workflowRoutes(app);
-  await app.ready();
-  return app;
+  return buildRouteTestApp(workflowRoutes);
 }
 
 describe("GET /api/workflows", () => {
@@ -64,8 +57,7 @@ describe("GET /api/workflows", () => {
   it("lists workflows with stats scoped to workspace", async () => {
     mockListWorkflowsWithStats.mockResolvedValue([
       {
-        id: "w-1",
-        name: "Deploy",
+        ...mockWorkflow,
         runCount: 3,
         lastRunAt: "2026-01-15T00:00:00Z",
         totalCostUsd: "1.5000",
@@ -100,7 +92,7 @@ describe("POST /api/workflows", () => {
   });
 
   it("creates a workflow", async () => {
-    mockCreateWorkflow.mockResolvedValue({ id: "w-1", name: "Deploy" });
+    mockCreateWorkflow.mockResolvedValue({ ...mockWorkflow, name: "Deploy" });
 
     const res = await app.inject({
       method: "POST",
@@ -132,14 +124,14 @@ describe("POST /api/workflows", () => {
     expect(res.json().error).toContain("Duplicate name");
   });
 
-  it("rejects missing promptTemplate (Zod throws)", async () => {
+  it("rejects missing promptTemplate (400 from Zod body schema)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/workflows",
       payload: { name: "Missing prompt" },
     });
 
-    expect(res.statusCode).toBe(500);
+    expect(res.statusCode).toBe(400);
   });
 });
 
@@ -153,8 +145,7 @@ describe("GET /api/workflows/:id", () => {
 
   it("returns a workflow with stats", async () => {
     mockGetWorkflowWithStats.mockResolvedValue({
-      id: "w-1",
-      name: "Deploy",
+      ...mockWorkflow,
       runCount: 5,
       lastRunAt: "2026-01-20T00:00:00Z",
       totalCostUsd: "2.0000",
@@ -185,7 +176,7 @@ describe("PATCH /api/workflows/:id", () => {
   });
 
   it("updates a workflow", async () => {
-    mockUpdateWorkflow.mockResolvedValue({ id: "w-1", name: "Updated" });
+    mockUpdateWorkflow.mockResolvedValue({ ...mockWorkflow, name: "Updated" });
 
     const res = await app.inject({
       method: "PATCH",
@@ -258,7 +249,7 @@ describe("POST /api/workflows/:id/runs", () => {
   });
 
   it("creates a workflow run", async () => {
-    mockCreateWorkflowRun.mockResolvedValue({ id: "run-1", state: "queued" });
+    mockCreateWorkflowRun.mockResolvedValue({ ...mockWorkflowRun });
 
     const res = await app.inject({
       method: "POST",
@@ -292,8 +283,11 @@ describe("GET /api/workflows/:id/runs", () => {
   });
 
   it("lists runs for a workflow", async () => {
-    mockGetWorkflow.mockResolvedValue({ id: "w-1", workspaceId: "ws-1", enabled: true });
-    mockListWorkflowRuns.mockResolvedValue([{ id: "run-1" }, { id: "run-2" }]);
+    mockGetWorkflow.mockResolvedValue({ ...mockWorkflow });
+    mockListWorkflowRuns.mockResolvedValue([
+      { ...mockWorkflowRun },
+      { ...mockWorkflowRun, id: "run-2" },
+    ]);
 
     const res = await app.inject({ method: "GET", url: "/api/workflows/w-1/runs" });
 
@@ -312,7 +306,7 @@ describe("GET /api/workflow-runs/:id", () => {
   });
 
   it("returns a workflow run", async () => {
-    mockGetWorkflowRun.mockResolvedValue({ id: "run-1" });
+    mockGetWorkflowRun.mockResolvedValue({ ...mockWorkflowRun });
 
     const res = await app.inject({ method: "GET", url: "/api/workflow-runs/run-1" });
 
@@ -339,7 +333,7 @@ describe("POST /api/workflow-runs/:id/retry", () => {
   });
 
   it("retries a failed workflow run", async () => {
-    mockRetryWorkflowRun.mockResolvedValue({ id: "run-1", state: "queued" });
+    mockRetryWorkflowRun.mockResolvedValue({ ...mockWorkflowRun });
 
     const res = await app.inject({ method: "POST", url: "/api/workflow-runs/run-1/retry" });
 
@@ -367,7 +361,7 @@ describe("POST /api/workflow-runs/:id/cancel", () => {
   });
 
   it("cancels a running workflow run", async () => {
-    mockCancelWorkflowRun.mockResolvedValue({ id: "run-1", state: "failed" });
+    mockCancelWorkflowRun.mockResolvedValue({ ...mockWorkflowRun, state: "cancelled" });
 
     const res = await app.inject({ method: "POST", url: "/api/workflow-runs/run-1/cancel" });
 
@@ -396,10 +390,24 @@ describe("GET /api/workflow-runs/:id/logs", () => {
 
   it("returns logs for a workflow run", async () => {
     const logs = [
-      { id: "log-1", taskId: "t-1", content: "Building..." },
-      { id: "log-2", taskId: "t-2", content: "Testing..." },
+      {
+        id: "log-1",
+        workflowRunId: "run-1",
+        content: "Building...",
+        logType: "text",
+        metadata: null,
+        timestamp: new Date("2026-04-11T12:00:00Z"),
+      },
+      {
+        id: "log-2",
+        workflowRunId: "run-1",
+        content: "Testing...",
+        logType: "text",
+        metadata: null,
+        timestamp: new Date("2026-04-11T12:01:00Z"),
+      },
     ];
-    mockGetWorkflowRun.mockResolvedValue({ id: "run-1", state: "running" });
+    mockGetWorkflowRun.mockResolvedValue({ ...mockWorkflowRun, state: "running" });
     mockGetWorkflowRunLogs.mockResolvedValue(logs);
 
     const res = await app.inject({ method: "GET", url: "/api/workflow-runs/run-1/logs" });
@@ -410,7 +418,7 @@ describe("GET /api/workflow-runs/:id/logs", () => {
   });
 
   it("passes query params to service", async () => {
-    mockGetWorkflowRun.mockResolvedValue({ id: "run-1", state: "running" });
+    mockGetWorkflowRun.mockResolvedValue({ ...mockWorkflowRun, state: "running" });
     mockGetWorkflowRunLogs.mockResolvedValue([]);
 
     const res = await app.inject({

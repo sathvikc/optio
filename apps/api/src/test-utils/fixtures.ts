@@ -114,3 +114,78 @@ export const mockTaskMessage = {
     avatarUrl: null,
   },
 };
+
+export const mockWorkflow = {
+  id: "wf-1",
+  name: "Deploy",
+  description: null,
+  promptTemplate: "Deploy {{env}}",
+  agentRuntime: "claude-code",
+  model: null,
+  maxTurns: null,
+  budgetUsd: null,
+  maxConcurrent: 1,
+  maxRetries: 0,
+  warmPoolSize: 0,
+  enabled: true,
+  environmentSpec: null,
+  paramsSchema: null,
+  workspaceId: "ws-1",
+  createdBy: "user-1",
+  createdAt: new Date("2026-04-11T12:00:00Z"),
+  updatedAt: new Date("2026-04-11T12:00:00Z"),
+};
+
+export const mockWorkflowRun = {
+  id: "run-1",
+  workflowId: "wf-1",
+  triggerId: null,
+  state: "queued",
+  params: null,
+  output: null,
+  costUsd: null,
+  inputTokens: null,
+  outputTokens: null,
+  modelUsed: null,
+  errorMessage: null,
+  sessionId: null,
+  podName: null,
+  retryCount: 0,
+  startedAt: null,
+  finishedAt: null,
+  createdAt: new Date("2026-04-11T12:00:00Z"),
+  updatedAt: new Date("2026-04-11T12:00:00Z"),
+};
+
+export const mockWorkflowTrigger = {
+  id: "trg-1",
+  workflowId: "wf-1",
+  type: "manual",
+  config: {},
+  paramMapping: null,
+  enabled: true,
+  lastFiredAt: null,
+  nextFireAt: null,
+  createdAt: new Date("2026-04-11T12:00:00Z"),
+  updatedAt: new Date("2026-04-11T12:00:00Z"),
+};
+
+export const mockSchedule = {
+  id: "sch-1",
+  name: "Nightly build",
+  description: null,
+  cronExpression: "0 0 * * *",
+  enabled: true,
+  taskConfig: {
+    title: "Nightly",
+    prompt: "Build",
+    repoUrl: "https://github.com/org/repo",
+    agentType: "claude-code",
+  },
+  workspaceId: "ws-1",
+  createdBy: "user-1",
+  nextRunAt: null,
+  lastRunAt: null,
+  createdAt: new Date("2026-04-11T12:00:00Z"),
+  updatedAt: new Date("2026-04-11T12:00:00Z"),
+};
