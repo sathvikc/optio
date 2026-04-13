@@ -8,8 +8,14 @@ import {
   DEFAULT_AGENT_IMAGE,
   PRESET_IMAGES,
   generateRepoPodName,
+  generateStatefulSetName,
   normalizeRepoUrl,
 } from "@optio/shared";
+import {
+  K8sWorkloadManager,
+  getWorkloadManager,
+  isStatefulSetEnabled,
+} from "./k8s-workload-service.js";
 import { logger } from "../logger.js";
 import {
   generateEnvoyConfig,
@@ -167,8 +173,9 @@ export async function getOrCreateRepoPod(
 
     // 4. Create new pod instance
     const instanceIndex = Number(currentPodCount);
+    const createFn = isStatefulSetEnabled() ? createRepoPodViaStatefulSet : createRepoPod;
     try {
-      return await createRepoPod(
+      return await createFn(
         repoUrl,
         repoBranch,
         env,
@@ -528,6 +535,287 @@ spec:
   }
 }
 
+/**
+ * Create a repo pod managed by a StatefulSet. Used when OPTIO_STATEFULSET_ENABLED=true.
+ * The StatefulSet and headless Service are created on first use for a repo,
+ * then scaled up for additional instances.
+ */
+async function createRepoPodViaStatefulSet(
+  repoUrl: string,
+  repoBranch: string,
+  env: Record<string, string>,
+  imageConfig?: RepoImageConfig,
+  instanceIndex = 0,
+  networkPolicy?: string,
+  resources?: {
+    cpuRequest?: string;
+    cpuLimit?: string;
+    memoryRequest?: string;
+    memoryLimit?: string;
+  },
+  dockerInDocker?: boolean,
+  secretProxy?: boolean,
+  workspaceId?: string | null,
+): Promise<RepoPod> {
+  // Admission check: Docker-in-Docker requires explicit workspace admin opt-in
+  if (dockerInDocker) {
+    if (!workspaceId) {
+      throw new Error("Docker-in-Docker requires a workspace with allowDockerInDocker enabled");
+    }
+    const [ws] = await db
+      .select({ allowDockerInDocker: workspaces.allowDockerInDocker })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    if (!ws?.allowDockerInDocker) {
+      throw new Error(
+        "Docker-in-Docker requires workspace admin opt-in. " +
+          "Enable allowDockerInDocker in workspace settings.",
+      );
+    }
+  }
+
+  const stsName = generateStatefulSetName(repoUrl);
+  const podName = K8sWorkloadManager.podNameForOrdinal(stsName, instanceIndex);
+
+  const [record] = await db
+    .insert(repoPods)
+    .values({
+      repoUrl,
+      repoBranch,
+      state: "provisioning",
+      instanceIndex,
+      statefulSetName: stsName,
+      managedBy: "statefulset",
+    })
+    .returning();
+
+  try {
+    const image = resolveImage(imageConfig);
+    const manager = getWorkloadManager();
+
+    // Build the base agent env
+    const agentEnv: Record<string, string> = {
+      ...env,
+      OPTIO_REPO_URL: repoUrl,
+      OPTIO_REPO_BRANCH: repoBranch,
+    };
+    if (secretProxy) {
+      Object.assign(agentEnv, getAgentProxyEnv());
+      agentEnv.OPTIO_SECRET_PROXY = "true";
+    }
+
+    // Build the ContainerSpec (same as bare pod path)
+    const spec: ContainerSpec = {
+      name: podName,
+      image,
+      command: ["/opt/optio/repo-init.sh"],
+      env: agentEnv,
+      workDir: "/workspace",
+      imagePullPolicy: (process.env.OPTIO_IMAGE_PULL_POLICY as any) ?? "Never",
+      cpuRequest: resources?.cpuRequest,
+      cpuLimit: resources?.cpuLimit,
+      memoryRequest: resources?.memoryRequest,
+      memoryLimit: resources?.memoryLimit,
+      labels: {
+        "optio.repo-url": repoUrl.replace(/[^a-zA-Z0-9-_.]/g, "_").slice(0, 63),
+        "optio.type": "repo-pod",
+        "optio.instance-index": String(instanceIndex),
+        "optio.network-policy": networkPolicy ?? "unrestricted",
+        "optio.secret-proxy": secretProxy ? "true" : "false",
+        "managed-by": "optio",
+      },
+      ...(dockerInDocker
+        ? {
+            hostUsers: false,
+            capabilities: ["SYS_CHROOT"],
+            tmpfsMounts: [{ mountPath: "/var/lib/docker", sizeLimit: "10Gi" }],
+          }
+        : {}),
+      ...(process.env.OPTIO_AGENT_NODE_SELECTOR
+        ? {
+            nodeSelector: parseJsonEnv(
+              "OPTIO_AGENT_NODE_SELECTOR",
+              process.env.OPTIO_AGENT_NODE_SELECTOR,
+            ) as Record<string, string>,
+          }
+        : {}),
+      ...(process.env.OPTIO_AGENT_TOLERATIONS
+        ? {
+            tolerations: parseJsonEnv(
+              "OPTIO_AGENT_TOLERATIONS",
+              process.env.OPTIO_AGENT_TOLERATIONS,
+            ) as unknown[],
+          }
+        : {}),
+    };
+
+    // Add Envoy sidecar if secret proxy is enabled
+    if (secretProxy) {
+      const envoyImage = process.env.OPTIO_ENVOY_IMAGE ?? "envoyproxy/envoy:v1.31-latest";
+      const pullPolicy = (process.env.OPTIO_IMAGE_PULL_POLICY as string) ?? "IfNotPresent";
+      const proxySecrets: SecretProxySecrets = {
+        githubToken: env.GITHUB_TOKEN,
+        anthropicApiKey: env.ANTHROPIC_API_KEY,
+      };
+      const envoyConfig = generateEnvoyConfig(proxySecrets);
+      const configMapName = `envoy-config-${stsName}`;
+      await createEnvoyConfigMap(configMapName, envoyConfig).catch((err) => {
+        logger.warn({ err, podName }, "Failed to create Envoy ConfigMap");
+      });
+
+      spec.sidecarContainers = [
+        { raw: buildEnvoySidecarContainer({ envoyImage, imagePullPolicy: pullPolicy }) },
+      ];
+      spec.initContainers = [
+        {
+          raw: buildSecretInitContainer({
+            envoyImage,
+            secrets: proxySecrets,
+            imagePullPolicy: pullPolicy,
+          }),
+        },
+      ];
+      spec.extraVolumes = buildEnvoyVolumes(envoyConfig).map((v) => {
+        if (v.name === "envoy-config") {
+          return {
+            raw: {
+              name: "envoy-config",
+              configMap: {
+                name: configMapName,
+                items: [{ key: "envoy.yaml", path: "envoy.yaml" }],
+              },
+            },
+          };
+        }
+        return { raw: v };
+      });
+      spec.extraVolumeMounts = [getAgentCaVolumeMount()];
+
+      for (const key of PROXIED_SECRET_ENV_VARS) {
+        delete spec.env[key];
+      }
+    }
+
+    // Load shared directories and ensure cache PVC exists
+    let cacheInfo: {
+      pvcName: string;
+      volumeMounts: Array<{ mountPath: string; subPath: string }>;
+    } | null = null;
+    try {
+      const { getSharedDirectoriesForRepo, ensureCachePvcForPod } =
+        await import("./shared-directory-service.js");
+      const sharedDirs = await getSharedDirectoriesForRepo(repoUrl, workspaceId);
+      if (sharedDirs.length > 0) {
+        cacheInfo = await ensureCachePvcForPod(repoUrl, instanceIndex, sharedDirs);
+        if (cacheInfo) {
+          await db
+            .update(repoPods)
+            .set({
+              cachePvcName: cacheInfo.pvcName,
+              cachePvcState: "bound",
+              updatedAt: new Date(),
+            })
+            .where(eq(repoPods.id, record.id));
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, repoUrl }, "Failed to set up cache PVC — continuing without cache");
+    }
+
+    // Add cache volume and mounts
+    if (cacheInfo) {
+      const cacheVolumeName = "optio-cache";
+      spec.extraVolumes = [
+        ...(spec.extraVolumes ?? []),
+        { raw: { name: cacheVolumeName, persistentVolumeClaim: { claimName: cacheInfo.pvcName } } },
+      ];
+      spec.extraVolumeMounts = [
+        ...(spec.extraVolumeMounts ?? []),
+        ...cacheInfo.volumeMounts.map((vm) => ({
+          name: cacheVolumeName,
+          mountPath: vm.mountPath,
+          subPath: vm.subPath,
+        })),
+      ];
+    }
+
+    // Ensure StatefulSet exists and scale to needed replica count
+    const homePvcSize = process.env.OPTIO_HOME_PVC_SIZE ?? "10Gi";
+    const homePvcStorageClass = process.env.OPTIO_HOME_PVC_STORAGE_CLASS || undefined;
+
+    const sts = await manager.ensureStatefulSet({
+      name: stsName,
+      spec,
+      homePvcSize,
+      homePvcStorageClass,
+    });
+
+    // Scale up if needed
+    if (instanceIndex >= sts.replicas) {
+      await manager.scale(stsName, instanceIndex + 1);
+    }
+
+    // Wait for the pod to be running
+    await manager.waitForPodRunning(podName);
+
+    // Apply network policy
+    if (networkPolicy === "restricted") {
+      await applyRestrictedNetworkPolicy(podName).catch((err) => {
+        logger.warn({ err, podName }, "Failed to apply NetworkPolicy");
+      });
+    }
+
+    // Read pod UID
+    const rt = getRuntime();
+    let podId = podName;
+    try {
+      const status = await rt.status({ id: podName, name: podName });
+      if (status.state === "running") podId = podName;
+    } catch {
+      // Pod status check failed, use name as fallback
+    }
+
+    await db
+      .update(repoPods)
+      .set({
+        podName,
+        podId,
+        state: "ready",
+        updatedAt: new Date(),
+      })
+      .where(eq(repoPods.id, record.id));
+
+    logger.info(
+      {
+        repoUrl,
+        podName,
+        instanceIndex,
+        statefulSetName: stsName,
+        networkPolicy: networkPolicy ?? "unrestricted",
+        secretProxy: !!secretProxy,
+      },
+      "Repo pod created via StatefulSet",
+    );
+
+    return {
+      ...record,
+      podName,
+      podId,
+      state: "ready",
+    };
+  } catch (err) {
+    await db
+      .update(repoPods)
+      .set({
+        state: "error",
+        errorMessage: String(err),
+        updatedAt: new Date(),
+      })
+      .where(eq(repoPods.id, record.id));
+    throw err;
+  }
+}
+
 async function waitForPodReady(podId: string, timeoutMs = 120_000): Promise<RepoPod> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -567,6 +855,13 @@ export async function execTaskInRepoPod(
           updatedAt: new Date(),
         })
         .where(eq(repoPods.id, pod.id));
+
+      // Mark pod as non-disruptable while tasks are running (Karpenter)
+      if (isStatefulSetEnabled() && pod.podName) {
+        getWorkloadManager()
+          .patchPodAnnotations(pod.podName, { "karpenter.sh/do-not-disrupt": "true" })
+          .catch((err) => logger.warn({ err }, "Failed to set do-not-disrupt annotation"));
+      }
 
       // Update task worktree state to active and record which pod it's running on
       await db
@@ -743,6 +1038,7 @@ export async function execTaskInRepoPod(
 
 /**
  * Decrement the active task count for a repo pod.
+ * Removes the do-not-disrupt annotation when count reaches 0.
  */
 export async function releaseRepoPodTask(podId: string): Promise<void> {
   await db
@@ -752,6 +1048,16 @@ export async function releaseRepoPodTask(podId: string): Promise<void> {
       updatedAt: new Date(),
     })
     .where(eq(repoPods.id, podId));
+
+  // Remove do-not-disrupt when pod becomes idle (allow Karpenter consolidation)
+  if (isStatefulSetEnabled()) {
+    const [updated] = await db.select().from(repoPods).where(eq(repoPods.id, podId));
+    if (updated && updated.activeTaskCount <= 0 && updated.podName) {
+      getWorkloadManager()
+        .patchPodAnnotations(updated.podName, { "karpenter.sh/do-not-disrupt": null })
+        .catch((err) => logger.warn({ err }, "Failed to remove do-not-disrupt annotation"));
+    }
+  }
 }
 
 /**
@@ -789,12 +1095,78 @@ export async function cleanupIdleRepoPods(): Promise<number> {
     podsByRepo.set(pod.repoUrl, existing);
   }
 
-  for (const [, repoIdlePods] of podsByRepo) {
+  for (const [repoUrl, repoIdlePods] of podsByRepo) {
     // Sort by instance index descending (remove higher instances first)
     const sorted = repoIdlePods.sort((a, b) => b.instanceIndex - a.instanceIndex);
 
-    for (const pod of sorted) {
-      // Skip pods that have active interactive sessions
+    // Separate StatefulSet-managed pods from bare pods
+    const stsPods = sorted.filter((p) => p.managedBy === "statefulset" && p.statefulSetName);
+    const barePods = sorted.filter((p) => p.managedBy !== "statefulset");
+
+    // Handle StatefulSet-managed pods: scale down rather than delete individually
+    if (stsPods.length > 0) {
+      const stsName = stsPods[0].statefulSetName!;
+      // Filter out pods with active sessions
+      const cleanable: typeof stsPods = [];
+      for (const pod of stsPods) {
+        const [activeSession] = await db
+          .select({ id: interactiveSessions.id })
+          .from(interactiveSessions)
+          .where(
+            and(eq(interactiveSessions.podId, pod.id), eq(interactiveSessions.state, "active")),
+          )
+          .limit(1);
+        if (!activeSession) cleanable.push(pod);
+      }
+
+      if (cleanable.length > 0) {
+        try {
+          const manager = getWorkloadManager();
+          // Count non-idle pods for this repo to determine target replica count
+          const allPodsForRepo = await db
+            .select()
+            .from(repoPods)
+            .where(eq(repoPods.repoUrl, repoUrl));
+          const activePodCount = allPodsForRepo.filter(
+            (p) => !cleanable.some((c) => c.id === p.id),
+          ).length;
+          const targetReplicas = Math.max(0, activePodCount);
+
+          if (targetReplicas === 0) {
+            // No more pods needed — delete StatefulSet entirely
+            await manager.deleteStatefulSet(stsName);
+          } else {
+            await manager.scale(stsName, targetReplicas);
+          }
+
+          // Clean up DB records and associated K8s resources
+          for (const pod of cleanable) {
+            if (pod.podName) {
+              await deleteNetworkPolicy(pod.podName).catch(() => {});
+            }
+            await db.delete(repoPods).where(eq(repoPods.id, pod.id));
+            logger.info(
+              { repoUrl, podName: pod.podName, instanceIndex: pod.instanceIndex },
+              "Cleaned up idle repo pod (StatefulSet scale-down)",
+            );
+            cleaned++;
+          }
+
+          // Clean up Envoy ConfigMap (one per StatefulSet)
+          if (targetReplicas === 0) {
+            await deleteEnvoyConfigMap(`envoy-config-${stsName}`).catch(() => {});
+          }
+        } catch (err) {
+          logger.warn(
+            { err, stsName: stsPods[0].statefulSetName },
+            "Failed to scale down StatefulSet",
+          );
+        }
+      }
+    }
+
+    // Handle bare pods: existing logic
+    for (const pod of barePods) {
       const [activeSession] = await db
         .select({ id: interactiveSessions.id })
         .from(interactiveSessions)

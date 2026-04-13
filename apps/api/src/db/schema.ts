@@ -323,12 +323,15 @@ export const repoPods = pgTable(
     errorMessage: text("error_message"),
     cachePvcName: text("cache_pvc_name"),
     cachePvcState: text("cache_pvc_state"), // "pending" | "bound" | "error"
+    statefulSetName: text("statefulset_name"),
+    managedBy: text("managed_by").notNull().default("bare-pod"), // "bare-pod" | "statefulset"
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("repo_pods_repo_url_idx").on(table.repoUrl),
     index("repo_pods_workspace_id_idx").on(table.workspaceId),
+    index("repo_pods_statefulset_name_idx").on(table.statefulSetName),
   ],
 );
 
@@ -945,6 +948,8 @@ export const workflowPods = pgTable(
     activeRunCount: integer("active_run_count").notNull().default(0),
     lastRunAt: timestamp("last_run_at", { withTimezone: true }),
     errorMessage: text("error_message"),
+    jobName: text("job_name"),
+    managedBy: text("managed_by").notNull().default("bare-pod"), // "bare-pod" | "job"
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

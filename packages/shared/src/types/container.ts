@@ -31,6 +31,10 @@ export interface ContainerSpec {
   nodeSelector?: Record<string, string>;
   /** Kubernetes tolerations for pod scheduling (raw V1Toleration objects). */
   tolerations?: unknown[];
+  /** Pod annotations (e.g. karpenter.sh/do-not-disrupt). */
+  annotations?: Record<string, string>;
+  /** Override the default termination grace period (seconds). */
+  terminationGracePeriodSeconds?: number;
 }
 
 export interface VolumeMount {

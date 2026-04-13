@@ -3,9 +3,14 @@ import { db } from "../db/client.js";
 import { workflowPods } from "../db/schema.js";
 import { getRuntime } from "./container-service.js";
 import type { ContainerHandle, ContainerSpec, ExecSession } from "@optio/shared";
-import { DEFAULT_AGENT_IMAGE, generateWorkflowPodName } from "@optio/shared";
+import {
+  DEFAULT_AGENT_IMAGE,
+  generateWorkflowPodName,
+  generateWorkflowJobName,
+} from "@optio/shared";
 import { logger } from "../logger.js";
 import { resolveImage } from "./repo-pool-service.js";
+import { getWorkloadManager, isStatefulSetEnabled } from "./k8s-workload-service.js";
 import type { RepoImageConfig } from "@optio/shared";
 
 const IDLE_TIMEOUT_MS = parseInt(process.env.OPTIO_WORKFLOW_POD_IDLE_MS ?? "600000", 10); // 10 min default
@@ -66,8 +71,9 @@ export async function getOrCreateWorkflowPod(
   }
 
   // Create new pod
+  const createFn = isStatefulSetEnabled() ? createWorkflowPodViaJob : createWorkflowPod;
   try {
-    return await createWorkflowPod(workflowRunId, env, opts);
+    return await createFn(workflowRunId, env, opts);
   } catch (err: any) {
     if (err?.message?.includes("unique") || err?.code === "23505") {
       logger.info({ workflowRunId }, "Concurrent pod creation detected, retrying lookup");
@@ -191,6 +197,113 @@ export async function createWorkflowPod(
   }
 }
 
+/**
+ * Create a workflow pod managed by a K8s Job. Used when OPTIO_STATEFULSET_ENABLED=true.
+ */
+async function createWorkflowPodViaJob(
+  workflowRunId: string,
+  env: Record<string, string>,
+  opts?: {
+    imageConfig?: RepoImageConfig;
+    workspaceId?: string | null;
+    cpuRequest?: string | null;
+    cpuLimit?: string | null;
+    memoryRequest?: string | null;
+    memoryLimit?: string | null;
+  },
+): Promise<WorkflowPod> {
+  const jobName = generateWorkflowJobName(workflowRunId);
+
+  const [record] = await db
+    .insert(workflowPods)
+    .values({
+      workflowRunId,
+      workspaceId: opts?.workspaceId ?? undefined,
+      state: "provisioning",
+      jobName,
+      managedBy: "job",
+    })
+    .returning();
+
+  try {
+    const image = resolveImage(opts?.imageConfig);
+    const manager = getWorkloadManager();
+
+    const initScript = [
+      "set -e",
+      "mkdir -p /workspace/runs",
+      "touch /workspace/.ready",
+      "echo '[optio] Workflow pod ready'",
+      "exec sleep infinity",
+    ].join("\n");
+
+    const spec: ContainerSpec = {
+      name: jobName,
+      image,
+      command: ["bash", "-c", initScript],
+      env: {
+        ...env,
+        OPTIO_WORKFLOW_RUN_ID: workflowRunId,
+      },
+      workDir: "/workspace",
+      imagePullPolicy: (process.env.OPTIO_IMAGE_PULL_POLICY as any) ?? "Never",
+      cpuRequest: opts?.cpuRequest ?? undefined,
+      cpuLimit: opts?.cpuLimit ?? undefined,
+      memoryRequest: opts?.memoryRequest ?? undefined,
+      memoryLimit: opts?.memoryLimit ?? undefined,
+      labels: {
+        "optio.workflow-run-id": workflowRunId.slice(0, 63),
+        "optio.type": "workflow-pod",
+        "managed-by": "optio",
+      },
+    };
+
+    const result = await manager.createJob({ name: jobName, spec });
+
+    await db
+      .update(workflowPods)
+      .set({
+        podName: result.podName,
+        podId: result.podId,
+        state: "ready",
+        updatedAt: new Date(),
+      })
+      .where(eq(workflowPods.id, record.id));
+
+    logger.info(
+      { workflowRunId, podName: result.podName, jobName },
+      "Workflow pod created via Job",
+    );
+
+    return {
+      ...record,
+      podName: result.podName,
+      podId: result.podId,
+      state: "ready",
+    };
+  } catch (err) {
+    await db
+      .update(workflowPods)
+      .set({
+        state: "error",
+        errorMessage: String(err),
+        updatedAt: new Date(),
+      })
+      .where(eq(workflowPods.id, record.id));
+
+    // Clean up the Job if it was created
+    try {
+      const manager = getWorkloadManager();
+      await manager.deleteJob(jobName);
+      logger.info({ jobName }, "Cleaned up failed workflow Job");
+    } catch (cleanupErr) {
+      logger.warn({ err: cleanupErr, jobName }, "Failed to cleanup errored workflow Job");
+    }
+
+    throw err;
+  }
+}
+
 async function waitForPodReady(podId: string, timeoutMs = 120_000): Promise<WorkflowPod> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -289,12 +402,17 @@ export async function cleanupIdleWorkflowPods(): Promise<number> {
 
   for (const pod of idlePods) {
     try {
-      if (pod.podName) {
+      if (pod.managedBy === "job" && pod.jobName) {
+        // Job-managed: delete the Job (cascades to pod)
+        const manager = getWorkloadManager();
+        await manager.deleteJob(pod.jobName);
+      } else if (pod.podName) {
+        // Bare pod: delete directly
         await rt.destroy({ id: pod.podId ?? pod.podName, name: pod.podName });
       }
       await db.delete(workflowPods).where(eq(workflowPods.id, pod.id));
       logger.info(
-        { workflowRunId: pod.workflowRunId, podName: pod.podName },
+        { workflowRunId: pod.workflowRunId, podName: pod.podName, managedBy: pod.managedBy },
         "Cleaned up idle workflow pod",
       );
       cleaned++;

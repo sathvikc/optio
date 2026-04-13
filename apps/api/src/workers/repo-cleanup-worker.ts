@@ -11,6 +11,7 @@ import {
 } from "../services/repo-pool-service.js";
 import { cleanupIdleWorkflowPods } from "../services/workflow-pool-service.js";
 import { getRuntime } from "../services/container-service.js";
+import { isStatefulSetEnabled, getWorkloadManager } from "../services/k8s-workload-service.js";
 import { TaskState, DEFAULT_STALL_THRESHOLD_MS } from "@optio/shared";
 import * as taskService from "../services/task-service.js";
 import { cleanupExpiredSessions } from "../services/session-service.js";
@@ -76,7 +77,11 @@ export function startRepoCleanupWorker() {
       const pods = await db.select().from(repoPods);
 
       for (const pod of pods) {
-        if (!pod.podName || pod.state === "provisioning") continue;
+        // Skip pods without a K8s name. For bare pods, also skip "provisioning"
+        // (still being created). For StatefulSet pods, "provisioning" means
+        // recovering from a crash — we need to check if they've come back.
+        if (!pod.podName) continue;
+        if (pod.state === "provisioning" && pod.managedBy !== "statefulset") continue;
 
         try {
           const status = await rt.status({
@@ -92,16 +97,6 @@ export function startRepoCleanupWorker() {
               : `Pod ${status.state}: ${status.reason ?? "unknown reason"}`;
 
             await recordHealthEvent(pod.id, pod.repoUrl, eventType, pod.podName, message);
-
-            // Mark the pod as errored
-            await db
-              .update(repoPods)
-              .set({
-                state: "error",
-                errorMessage: message,
-                updatedAt: new Date(),
-              })
-              .where(eq(repoPods.id, pod.id));
 
             // Fail any tasks that were running on this pod
             const activeTasks = await db
@@ -124,26 +119,57 @@ export function startRepoCleanupWorker() {
               } catch {}
             }
 
-            // Auto-restart: delete the dead pod (and its NetworkPolicy) and clear the record
-            try {
-              await deleteNetworkPolicy(pod.podName).catch(() => {});
-              await rt.destroy({ id: pod.podId ?? pod.podName, name: pod.podName });
-            } catch {}
-            await db.delete(repoPods).where(eq(repoPods.id, pod.id));
-            await recordHealthEvent(
-              pod.id,
-              pod.repoUrl,
-              "restarted",
-              pod.podName,
-              "Pod record cleared for auto-recreation",
-            );
+            if (pod.managedBy === "statefulset") {
+              // StatefulSet pods auto-restart (restartPolicy: Always).
+              // Mark as provisioning and wait for recovery rather than deleting.
+              await db
+                .update(repoPods)
+                .set({
+                  state: "provisioning",
+                  activeTaskCount: 0,
+                  errorMessage: message,
+                  updatedAt: new Date(),
+                })
+                .where(eq(repoPods.id, pod.id));
 
-            logger.warn(
-              { repoUrl: pod.repoUrl, podName: pod.podName, eventType },
-              "Unhealthy pod cleaned up",
-            );
-          } else if (status.state === "running" && pod.state === "error") {
-            // Pod recovered (shouldn't happen but handle it)
+              logger.warn(
+                { repoUrl: pod.repoUrl, podName: pod.podName, eventType },
+                "StatefulSet pod crashed — waiting for auto-restart",
+              );
+            } else {
+              // Bare pod: delete and clear record for auto-recreation
+              await db
+                .update(repoPods)
+                .set({
+                  state: "error",
+                  errorMessage: message,
+                  updatedAt: new Date(),
+                })
+                .where(eq(repoPods.id, pod.id));
+
+              try {
+                await deleteNetworkPolicy(pod.podName).catch(() => {});
+                await rt.destroy({ id: pod.podId ?? pod.podName, name: pod.podName });
+              } catch {}
+              await db.delete(repoPods).where(eq(repoPods.id, pod.id));
+              await recordHealthEvent(
+                pod.id,
+                pod.repoUrl,
+                "restarted",
+                pod.podName,
+                "Pod record cleared for auto-recreation",
+              );
+
+              logger.warn(
+                { repoUrl: pod.repoUrl, podName: pod.podName, eventType },
+                "Unhealthy pod cleaned up",
+              );
+            }
+          } else if (
+            status.state === "running" &&
+            (pod.state === "error" || pod.state === "provisioning")
+          ) {
+            // Pod recovered (StatefulSet auto-restart, or unexpected recovery)
             await db
               .update(repoPods)
               .set({ state: "ready", errorMessage: null, updatedAt: new Date() })
@@ -151,18 +177,31 @@ export function startRepoCleanupWorker() {
             await recordHealthEvent(pod.id, pod.repoUrl, "healthy", pod.podName, "Pod recovered");
           }
         } catch (err) {
-          // Pod not found in K8s — clean up the record and any associated NetworkPolicy
-          if (pod.podName) {
-            await deleteNetworkPolicy(pod.podName).catch(() => {});
+          if (pod.managedBy === "statefulset") {
+            // StatefulSet pod not found — it may be restarting. Mark as provisioning.
+            await db
+              .update(repoPods)
+              .set({
+                state: "provisioning",
+                activeTaskCount: 0,
+                errorMessage: `Pod not found, may be restarting: ${String(err)}`,
+                updatedAt: new Date(),
+              })
+              .where(eq(repoPods.id, pod.id));
+          } else {
+            // Bare pod not found — clean up the record
+            if (pod.podName) {
+              await deleteNetworkPolicy(pod.podName).catch(() => {});
+            }
+            await db.delete(repoPods).where(eq(repoPods.id, pod.id));
+            await recordHealthEvent(
+              pod.id,
+              pod.repoUrl,
+              "crashed",
+              pod.podName,
+              `Pod not found in cluster: ${String(err)}`,
+            );
           }
-          await db.delete(repoPods).where(eq(repoPods.id, pod.id));
-          await recordHealthEvent(
-            pod.id,
-            pod.repoUrl,
-            "crashed",
-            pod.podName,
-            `Pod not found in cluster: ${String(err)}`,
-          );
         }
       }
 

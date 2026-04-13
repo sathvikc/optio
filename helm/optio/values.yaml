@@ -159,6 +159,13 @@ agent:
   #    operator: Equal
   #    value: "true"
   #    effect: NoSchedule
+  # StatefulSet/Job configuration for agent pods.
+  # When enabled, repo pods are managed by StatefulSets and workflow pods by
+  # Jobs. This enables Karpenter (and other node autoscalers) to provision
+  # nodes for agent workloads. Set to false for bare-pod mode (legacy).
+  statefulSet:
+    enabled: true
+    terminationGracePeriodSeconds: 300
   # Shared cache directory PVCs (opt-in per repo).
   # Controls storage class and size limits for cache directories.
   cache:

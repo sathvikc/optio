@@ -91,3 +91,58 @@ export function generateRepoPodName(repoUrl: string): string {
   const hash = Math.random().toString(16).slice(2, 6);
   return `${prefix}${ownerClean}-${repoClean}-${hash}`;
 }
+
+/**
+ * Generate a deterministic StatefulSet name for a repo URL.
+ *
+ * Format: `optio-sts-<owner>-<repo>` — NO random suffix so that multiple
+ * API replicas produce the same name for the same repo. Pod names within
+ * the StatefulSet are `<sts-name>-<ordinal>`.
+ */
+export function generateStatefulSetName(repoUrl: string): string {
+  const match = repoUrl.match(/[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/);
+  const owner = match?.[1] ?? "unknown";
+  const repo = match?.[2] ?? "unknown";
+
+  const sanitize = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+
+  const prefix = "optio-sts-";
+  const maxBodyLen = K8S_NAME_MAX - prefix.length;
+
+  let ownerClean = sanitize(owner);
+  let repoClean = sanitize(repo);
+
+  const totalLen = ownerClean.length + 1 + repoClean.length;
+  if (totalLen > maxBodyLen) {
+    const repoBudget = Math.floor(maxBodyLen / 2);
+    const ownerBudget = maxBodyLen - repoBudget - 1;
+    ownerClean = ownerClean.slice(0, ownerBudget).replace(/-$/, "");
+    repoClean = repoClean.slice(0, repoBudget).replace(/-$/, "");
+  }
+
+  return `${prefix}${ownerClean}-${repoClean}`;
+}
+
+/**
+ * Generate a deterministic K8s Job name for a workflow run.
+ *
+ * Format: `optio-wfj-<runId>` — uses the full UUID (36 chars) since it
+ * fits within the 63-char K8s limit. No random suffix needed because
+ * workflow run IDs are already unique.
+ */
+export function generateWorkflowJobName(workflowRunId: string): string {
+  const prefix = "optio-wfj-";
+  const sanitized = workflowRunId
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, K8S_NAME_MAX - prefix.length);
+
+  return `${prefix}${sanitized}`;
+}

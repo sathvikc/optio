@@ -230,6 +230,10 @@ export class KubernetesContainerRuntime implements ContainerRuntime {
     podSpec.restartPolicy = "Never";
     podSpec.volumes = volumes.length > 0 ? volumes : undefined;
 
+    if (spec.terminationGracePeriodSeconds !== undefined) {
+      podSpec.terminationGracePeriodSeconds = spec.terminationGracePeriodSeconds;
+    }
+
     // User namespace isolation (K8s 1.33+)
     if (spec.hostUsers === false) {
       podSpec.hostUsers = false;
@@ -250,6 +254,9 @@ export class KubernetesContainerRuntime implements ContainerRuntime {
       ...spec.labels,
       "app.kubernetes.io/managed-by": "optio",
     };
+    if (spec.annotations && Object.keys(spec.annotations).length > 0) {
+      metadata.annotations = spec.annotations;
+    }
 
     const pod = new V1Pod();
     pod.apiVersion = "v1";

@@ -63,6 +63,11 @@ vi.mock("../logger.js", () => ({
   },
 }));
 
+vi.mock("./k8s-workload-service.js", () => ({
+  isStatefulSetEnabled: () => false,
+  getWorkloadManager: vi.fn(),
+}));
+
 import { db } from "../db/client.js";
 import {
   getOrCreateWorkflowPod,

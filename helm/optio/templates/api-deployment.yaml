@@ -103,6 +103,10 @@ spec:
                   name: {{ .Release.Name }}-redis-auth
                   key: REDIS_PASSWORD
             {{- end }}
+            - name: OPTIO_STATEFULSET_ENABLED
+              value: {{ .Values.agent.statefulSet.enabled | quote }}
+            - name: OPTIO_TERMINATION_GRACE_PERIOD_SECONDS
+              value: {{ .Values.agent.statefulSet.terminationGracePeriodSeconds | quote }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           readinessProbe:

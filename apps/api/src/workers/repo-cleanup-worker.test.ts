@@ -163,6 +163,11 @@ vi.mock("./task-worker.js", () => ({
 
 // ── drizzle-orm mock — eq() and sql`` just pass-through ────────────────────
 
+vi.mock("../services/k8s-workload-service.js", () => ({
+  isStatefulSetEnabled: () => false,
+  getWorkloadManager: vi.fn(),
+}));
+
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((_col, _val) => ({ type: "eq" })),
   sql: new Proxy((..._args: unknown[]) => ({}), {
@@ -187,6 +192,8 @@ function makePod(overrides: Record<string, unknown> = {}) {
     activeTaskCount: 0,
     instanceIndex: 0,
     errorMessage: null,
+    managedBy: "bare-pod",
+    statefulSetName: null,
     ...overrides,
   };
 }
