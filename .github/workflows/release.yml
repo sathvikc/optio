@@ -20,20 +20,20 @@ permissions:
 jobs:
   # ── Core service images ────────────────────────────────────────────────────
   build-services:
-    name: Build ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.service }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
+        service: [api, web, optio]
+        platform: [linux/amd64, linux/arm64]
         include:
-          - service: api
-            dockerfile: Dockerfile.api
-            context: .
-          - service: web
-            dockerfile: Dockerfile.web
-            context: .
-          - service: optio
-            dockerfile: Dockerfile.optio
-            context: .
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            platform-tag: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            platform-tag: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -49,32 +49,96 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-${{ matrix.service }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.${{ matrix.service }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-${{ matrix.service }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform-tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.platform-tag }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.service }}-${{ matrix.platform-tag }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-services:
+    name: Merge ${{ matrix.service }} manifest
+    needs: build-services
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, web, optio]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.service }}-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-${{ matrix.service }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Create manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-${{ matrix.service }}@sha256:%s ' *)
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-${{ matrix.service }}:${{ steps.meta.outputs.version }}
 
   # ── Agent images ───────────────────────────────────────────────────────────
   build-agent-base:
-    name: Build agent-base
-    runs-on: ubuntu-latest
-    outputs:
-      base-tag: ${{ steps.meta.outputs.version }}
+    name: Build agent-base (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            platform-tag: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            platform-tag: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -90,32 +154,96 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/base.Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=agent-base-${{ matrix.platform-tag }}
+          cache-to: type=gha,mode=max,scope=agent-base-${{ matrix.platform-tag }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-agent-base-${{ matrix.platform-tag }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-agent-base:
+    name: Merge agent-base manifest
+    needs: build-agent-base
+    runs-on: ubuntu-latest
+    outputs:
+      base-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-agent-base-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Create manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base@sha256:%s ' *)
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: images/base.Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=agent-base
-          cache-to: type=gha,mode=max,scope=agent-base
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base:${{ steps.meta.outputs.version }}
 
   build-agent-presets:
-    name: Build agent-${{ matrix.preset }}
-    runs-on: ubuntu-latest
-    needs: build-agent-base
+    name: Build agent-${{ matrix.preset }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    needs: merge-agent-base
     strategy:
+      fail-fast: false
       matrix:
         preset: [node, python, go, rust, full]
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            platform-tag: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            platform-tag: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -131,32 +259,88 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-${{ matrix.preset }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/${{ matrix.preset }}.Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base:${{ needs.merge-agent-base.outputs.base-tag }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-${{ matrix.preset }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=agent-${{ matrix.preset }}-${{ matrix.platform-tag }}
+          cache-to: type=gha,mode=max,scope=agent-${{ matrix.preset }}-${{ matrix.platform-tag }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-agent-${{ matrix.preset }}-${{ matrix.platform-tag }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-agent-presets:
+    name: Merge agent-${{ matrix.preset }} manifest
+    needs: build-agent-presets
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        preset: [node, python, go, rust, full]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-agent-${{ matrix.preset }}-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-${{ matrix.preset }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Create manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-${{ matrix.preset }}@sha256:%s ' *)
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: images/${{ matrix.preset }}.Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-base:${{ needs.build-agent-base.outputs.base-tag }}
-          cache-from: type=gha,scope=agent-${{ matrix.preset }}
-          cache-to: type=gha,mode=max,scope=agent-${{ matrix.preset }}
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/optio-agent-${{ matrix.preset }}:${{ steps.meta.outputs.version }}
 
   # ── Helm chart OCI artifact ────────────────────────────────────────────────
   publish-chart:
     name: Publish Helm chart
     runs-on: ubuntu-latest
-    needs: [build-services, build-agent-presets]
+    needs: [merge-services, merge-agent-presets]
     steps:
       - uses: actions/checkout@v4
 

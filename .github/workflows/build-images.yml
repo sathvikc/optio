@@ -21,10 +21,18 @@ permissions:
 
 jobs:
   build-base:
-    name: Build base image
-    runs-on: ubuntu-latest
-    outputs:
-      base-tag: ${{ steps.meta.outputs.version }}
+    name: Build base (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            platform-tag: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            platform-tag: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -40,33 +48,96 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_PREFIX }}-base
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/base.Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-base,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=base-${{ matrix.platform-tag }}
+          cache-to: type=gha,mode=max,scope=base-${{ matrix.platform-tag }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-base-${{ matrix.platform-tag }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-base:
+    name: Merge base manifest
+    needs: build-base
+    runs-on: ubuntu-latest
+    outputs:
+      base-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-base-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-base
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Create manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_PREFIX }}-base@sha256:%s ' *)
 
-      - name: Build and push base
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: images/base.Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=base
-          cache-to: type=gha,mode=max,scope=base
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE_PREFIX }}-base:${{ steps.meta.outputs.version }}
 
   build-presets:
-    name: Build ${{ matrix.preset }}
-    runs-on: ubuntu-latest
-    needs: build-base
+    name: Build ${{ matrix.preset }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    needs: merge-base
     strategy:
+      fail-fast: false
       matrix:
         preset: [node, python, go, rust, full]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            platform-tag: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            platform-tag: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -82,24 +153,80 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_PREFIX }}-${{ matrix.preset }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/${{ matrix.preset }}.Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE_PREFIX }}-base:${{ needs.merge-base.outputs.base-tag }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-${{ matrix.preset }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.preset }}-${{ matrix.platform-tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.preset }}-${{ matrix.platform-tag }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.preset }}-${{ matrix.platform-tag }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-presets:
+    name: Merge ${{ matrix.preset }} manifest
+    needs: build-presets
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        preset: [node, python, go, rust, full]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.preset }}-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.preset }}
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Create manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_PREFIX }}-${{ matrix.preset }}@sha256:%s ' *)
 
-      - name: Build and push ${{ matrix.preset }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: images/${{ matrix.preset }}.Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ env.IMAGE_PREFIX }}-base:${{ needs.build-base.outputs.base-tag }}
-          cache-from: type=gha,scope=${{ matrix.preset }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.preset }}
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE_PREFIX }}-${{ matrix.preset }}:${{ steps.meta.outputs.version }}
