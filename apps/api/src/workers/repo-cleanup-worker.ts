@@ -16,7 +16,7 @@ import {
 } from "../services/zombie-cleanup-service.js";
 import { getRuntime } from "../services/container-service.js";
 import { isStatefulSetEnabled, getWorkloadManager } from "../services/k8s-workload-service.js";
-import { TaskState, DEFAULT_STALL_THRESHOLD_MS } from "@optio/shared";
+import { TaskState, DEFAULT_STALL_THRESHOLD_MS, parseIntEnv } from "@optio/shared";
 import * as taskService from "../services/task-service.js";
 import { cleanupExpiredSessions } from "../services/session-service.js";
 import { publishEvent } from "../services/event-bus.js";
@@ -58,7 +58,7 @@ export function startRepoCleanupWorker() {
     {},
     {
       repeat: {
-        every: parseInt(process.env.OPTIO_HEALTH_CHECK_INTERVAL ?? "60000", 10),
+        every: parseIntEnv("OPTIO_HEALTH_CHECK_INTERVAL", 60000),
       },
     },
   );
@@ -69,7 +69,7 @@ export function startRepoCleanupWorker() {
     {},
     {
       repeat: {
-        every: parseInt(process.env.OPTIO_STALL_CHECK_INTERVAL ?? "30000", 10),
+        every: parseIntEnv("OPTIO_STALL_CHECK_INTERVAL", 30000),
       },
     },
   );
@@ -407,7 +407,7 @@ export function startRepoCleanupWorker() {
       }
 
       // Detect stale running/provisioning tasks (agent exec died without updating state)
-      const STALE_TASK_MS = parseInt(process.env.OPTIO_STALE_TASK_MS ?? "600000", 10); // 10 min
+      const STALE_TASK_MS = parseIntEnv("OPTIO_STALE_TASK_MS", 600000); // 10 min
       const MAX_STALE_RETRIES = 3;
       const staleTasks = await db
         .select()
