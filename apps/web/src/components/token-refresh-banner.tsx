@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Check, ExternalLink } from "lucide-react";
+import { AlertTriangle, Check, Copy, ExternalLink, Key, Loader2 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 
@@ -36,58 +36,59 @@ export function TokenRefreshBanner({ onSaved }: { onSaved?: () => void | Promise
   };
 
   return (
-    <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <AlertTriangle className="w-4 h-4 text-warning shrink-0" />
-        <span className="text-sm font-medium text-text-heading">OAuth token expired</span>
-        <span className="text-xs text-text-muted">
-          — tasks will fail until a new token is provided
-        </span>
+    <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 space-y-2">
+      <div className="flex items-start gap-2.5">
+        <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-text-heading">Claude OAuth token expired</div>
+          <div className="text-xs text-text-muted mt-0.5">
+            Tasks will fail until a new token is provided.
+          </div>
+        </div>
       </div>
 
-      <div>
-        <p className="text-xs text-text-muted mb-1.5">Run this in a terminal to copy your token:</p>
+      <div className="p-2.5 rounded-md bg-bg/50 border border-border">
+        <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
+          1. Copy your token
+        </div>
         <div className="relative group">
-          <pre className="text-[11px] font-mono bg-bg-card border border-border rounded-md px-3 py-2.5 overflow-x-auto select-all whitespace-pre-wrap break-all">
+          <pre className="text-[11px] text-text/80 whitespace-pre-wrap font-mono bg-bg-card rounded px-2.5 py-2 border border-border select-all break-all">
             {COPY_COMMAND}
           </pre>
           <button
             type="button"
             onClick={() => {
               navigator.clipboard.writeText(COPY_COMMAND);
-              toast.success("Command copied to clipboard");
+              toast.success("Command copied");
             }}
-            className="absolute top-1.5 right-1.5 px-2 py-1 rounded bg-bg-hover text-text-muted hover:text-text text-[10px] opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute top-1 right-1 p-1 rounded bg-bg-hover text-text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity"
           >
-            Copy
+            <Copy className="w-3 h-3" />
           </button>
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <input
-          type="password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder="Paste token here"
-          className="flex-1 px-3 py-1.5 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary font-mono"
-        />
-        <button
-          onClick={handleSave}
-          disabled={!token.trim() || saving}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-white text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-        >
-          {saving ? (
-            "Saving..."
-          ) : token.trim() ? (
-            <>
-              <Check className="w-3 h-3" />
-              Save Token
-            </>
-          ) : (
-            "Save Token"
-          )}
-        </button>
+      <div className="p-2.5 rounded-md bg-bg/50 border border-border">
+        <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
+          2. Paste new token
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="Paste token here"
+            className="flex-1 px-2.5 py-1.5 rounded-md bg-bg border border-border text-xs font-mono focus:outline-none focus:border-primary"
+          />
+          <button
+            onClick={handleSave}
+            disabled={!token.trim() || saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-white text-xs hover:bg-primary-hover disabled:opacity-50 btn-press transition-all"
+          >
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Key className="w-3 h-3" />}
+            Update
+          </button>
+        </div>
       </div>
     </div>
   );

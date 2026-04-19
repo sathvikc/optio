@@ -31,6 +31,8 @@ import {
   CopyPlus,
 } from "lucide-react";
 import { RunWorkflowDialog } from "@/components/run-workflow-dialog";
+import { StateBadge } from "@/components/state-badge";
+import { MetadataCard } from "@/components/metadata-card";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -85,62 +87,6 @@ interface WorkflowTrigger {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-}
-
-// ── Run state badge ────────────────────────────────────────────────────────────
-
-const RUN_STATE_CONFIG: Record<
-  string,
-  { label: string; color: string; dotColor: string; glowClass: string; pulse?: boolean }
-> = {
-  queued: {
-    label: "Queued",
-    color: "text-info",
-    dotColor: "bg-info",
-    glowClass: "badge-glow-info",
-  },
-  running: {
-    label: "Running",
-    color: "text-primary",
-    dotColor: "bg-primary",
-    glowClass: "badge-glow-primary",
-    pulse: true,
-  },
-  completed: {
-    label: "Completed",
-    color: "text-success",
-    dotColor: "bg-success",
-    glowClass: "badge-glow-success",
-  },
-  failed: {
-    label: "Failed",
-    color: "text-error",
-    dotColor: "bg-error",
-    glowClass: "badge-glow-error",
-  },
-};
-
-function RunStateBadge({ state }: { state: string }) {
-  const config = RUN_STATE_CONFIG[state] ?? {
-    label: state,
-    color: "text-text-muted",
-    dotColor: "bg-text-muted",
-    glowClass: "badge-glow-muted",
-  };
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium tracking-wide uppercase transition-all duration-200",
-        config.color,
-        config.glowClass,
-      )}
-    >
-      <span
-        className={cn("w-1.5 h-1.5 rounded-full", config.dotColor, config.pulse && "glow-dot")}
-      />
-      {config.label}
-    </span>
-  );
 }
 
 // ── Trigger type icon ──────────────────────────────────────────────────────────
@@ -373,40 +319,25 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
 
       {/* Stats bar */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <div className="rounded-lg border border-border/50 bg-bg-card p-3">
-          <div className="flex items-center gap-2 text-xs text-text-muted mb-1">
-            <Hash className="w-3.5 h-3.5" />
-            Total Runs
-          </div>
-          <div className="text-lg font-semibold">{workflow.runCount}</div>
-        </div>
-        <div className="rounded-lg border border-border/50 bg-bg-card p-3">
-          <div className="flex items-center gap-2 text-xs text-text-muted mb-1">
-            <Activity className="w-3.5 h-3.5" />
-            Success Rate
-          </div>
-          <div className="text-lg font-semibold">
-            {runs.length > 0 ? `${successRate}%` : "\u2014"}
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/50 bg-bg-card p-3">
-          <div className="flex items-center gap-2 text-xs text-text-muted mb-1">
-            <DollarSign className="w-3.5 h-3.5" />
-            Total Cost
-          </div>
-          <div className="text-lg font-semibold">
-            ${parseFloat(workflow.totalCostUsd).toFixed(2)}
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/50 bg-bg-card p-3">
-          <div className="flex items-center gap-2 text-xs text-text-muted mb-1">
-            <Clock className="w-3.5 h-3.5" />
-            Last Run
-          </div>
-          <div className="text-lg font-semibold">
-            {workflow.lastRunAt ? formatRelativeTime(workflow.lastRunAt) : "\u2014"}
-          </div>
-        </div>
+        <MetadataCard icon={Hash} label="Total Runs" value={workflow.runCount} size="lg" />
+        <MetadataCard
+          icon={Activity}
+          label="Success Rate"
+          value={runs.length > 0 ? `${successRate}%` : "\u2014"}
+          size="lg"
+        />
+        <MetadataCard
+          icon={DollarSign}
+          label="Total Cost"
+          value={`$${parseFloat(workflow.totalCostUsd).toFixed(2)}`}
+          size="lg"
+        />
+        <MetadataCard
+          icon={Clock}
+          label="Last Run"
+          value={workflow.lastRunAt ? formatRelativeTime(workflow.lastRunAt) : "\u2014"}
+          size="lg"
+        />
       </div>
 
       {/* Active runs indicator */}
@@ -567,7 +498,7 @@ function RunsTable({
                 >
                   <td className="px-4 py-2.5">
                     <Link href={`/jobs/${workflowId}/runs/${run.id}`}>
-                      <RunStateBadge state={run.state} />
+                      <StateBadge state={run.state} />
                     </Link>
                   </td>
                   <td className="px-4 py-2.5 text-text-muted text-xs">

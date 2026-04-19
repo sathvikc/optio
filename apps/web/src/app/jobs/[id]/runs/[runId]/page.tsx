@@ -5,6 +5,9 @@ import { use, useState, useEffect, useCallback } from "react";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { useWorkflowRunLogs } from "@/hooks/use-workflow-run-logs";
 import { LogViewer } from "@/components/log-viewer";
+import { TokenRefreshBanner } from "@/components/token-refresh-banner";
+import { StateBadge } from "@/components/state-badge";
+import { MetadataCard } from "@/components/metadata-card";
 import { api } from "@/lib/api-client";
 import { classifyError } from "@optio/shared";
 import { cn, formatRelativeTime, formatDuration } from "@/lib/utils";
@@ -57,62 +60,6 @@ interface WorkflowRun {
 interface WorkflowSummary {
   id: string;
   name: string;
-}
-
-// ── Run state badge ────────────────────────────────────────────────────────────
-
-const RUN_STATE_CONFIG: Record<
-  string,
-  { label: string; color: string; dotColor: string; glowClass: string; pulse?: boolean }
-> = {
-  queued: {
-    label: "Queued",
-    color: "text-info",
-    dotColor: "bg-info",
-    glowClass: "badge-glow-info",
-  },
-  running: {
-    label: "Running",
-    color: "text-primary",
-    dotColor: "bg-primary",
-    glowClass: "badge-glow-primary",
-    pulse: true,
-  },
-  completed: {
-    label: "Completed",
-    color: "text-success",
-    dotColor: "bg-success",
-    glowClass: "badge-glow-success",
-  },
-  failed: {
-    label: "Failed",
-    color: "text-error",
-    dotColor: "bg-error",
-    glowClass: "badge-glow-error",
-  },
-};
-
-function RunStateBadge({ state }: { state: string }) {
-  const config = RUN_STATE_CONFIG[state] ?? {
-    label: state,
-    color: "text-text-muted",
-    dotColor: "bg-text-muted",
-    glowClass: "badge-glow-muted",
-  };
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium tracking-wide uppercase transition-all duration-200",
-        config.color,
-        config.glowClass,
-      )}
-    >
-      <span
-        className={cn("w-1.5 h-1.5 rounded-full", config.dotColor, config.pulse && "glow-dot")}
-      />
-      {config.label}
-    </span>
-  );
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────────
@@ -248,7 +195,7 @@ export default function WorkflowRunDetailPage({
       {/* Header */}
       <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <RunStateBadge state={run.state} />
+          <StateBadge state={run.state} />
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Run {run.id.slice(0, 8)}</h1>
             <p className="text-sm text-text-muted mt-0.5">
@@ -333,8 +280,15 @@ export default function WorkflowRunDetailPage({
         />
       </div>
 
-      {/* Error panel */}
-      {classifiedError && (
+      {/* Auth-specific banner — matches the overview panel + normal task page */}
+      {classifiedError?.category === "auth" && (
+        <div className="mb-6">
+          <TokenRefreshBanner onSaved={refresh} />
+        </div>
+      )}
+
+      {/* Error panel (non-auth errors only — auth has its own rich banner above) */}
+      {classifiedError && classifiedError.category !== "auth" && (
         <div className="mb-6 rounded-lg border border-error/30 bg-error/5 p-4">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-error shrink-0 mt-0.5" />
@@ -413,30 +367,6 @@ export default function WorkflowRunDetailPage({
       {activeTab === "params" && (
         <ParamsPanel params={run.params} showParams={showParams} setShowParams={setShowParams} />
       )}
-    </div>
-  );
-}
-
-// ── Metadata card ───────────────────────────────────────────────────────────
-
-function MetadataCard({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-lg border border-border/50 bg-bg-card p-3">
-      <div className="flex items-center gap-2 text-xs text-text-muted mb-1">
-        <Icon className="w-3.5 h-3.5" />
-        {label}
-      </div>
-      <div className="text-sm font-semibold truncate" title={value}>
-        {value}
-      </div>
     </div>
   );
 }
