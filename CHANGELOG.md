@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-20
+
+### Added
+
+- **Pooled standalone-task pods** — runs within a workflow now share pods, scaling out to `workflows.maxPodInstances` replicas each hosting up to `workflows.maxAgentsPerPod` concurrent runs (mirrors repo pod scaling). Runs track assigned pods via `workflow_runs.pod_id` with `last_pod_id` for retry affinity, and pool selection follows preferred → least-loaded → scale-up → overflow. Fixes a leak where a burst of triggers would spawn one pod per run even though only a few ran at once.
+
+### Changed
+
+- **Reconciliation control plane is now authoritative** — the K8s-style reconciler (shadow mode in 0.2.0) now owns PR-driven transitions, auto-merge, complete-on-merge, fail-on-close, auto-resume, review launch, stall detection, pod-death detection, and control intent (cancel/retry/resume/restart) for both Repo Tasks and Standalone Tasks.
+- **Shared auth banner, state badge, and metadata card** across task pages for a consistent UX.
+
+### Fixed
+
+- Reconciler: clear stale `finishedAt` when retrying a standalone run.
+- Reconciler: use unique jobIds for executor enqueues to prevent BullMQ dedup collisions.
+- Agent adapters: include `cache_read` and `cache_creation` tokens in input totals (#457).
+- API: trigger auth banner when the usage endpoint detects an expired OAuth token (#455).
+- API: detect Claude auth failures mid-run in standalone task runs and override nominally-successful exit codes.
+
+### Docs
+
+- Document the unified reconciler and the Repo vs Standalone Task model.
+
 ## [0.2.0] - 2026-04-17
 
 ### Added
