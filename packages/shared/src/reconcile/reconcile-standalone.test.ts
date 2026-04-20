@@ -395,6 +395,22 @@ describe("reconcileStandalone — auto-retry on FAILED", () => {
     }
   });
 
+  it("clears stale finishedAt when auto-retrying so decideRunning doesn't short-circuit", () => {
+    // Without this, the next decideRunning pass sees finishedAt && !errorMessage
+    // and immediately transitions the retry to COMPLETED before the agent runs.
+    const s = snapshot(
+      { maxRetries: 3 },
+      {
+        state: WorkflowRunState.FAILED,
+        retryCount: 0,
+        finishedAt: new Date(NOW.getTime() - 60_000),
+      },
+    );
+    const action = reconcileStandalone(s);
+    if (action.kind !== "transition") throw new Error("expected transition");
+    expect(action.statusPatch?.finishedAt).toBeNull();
+  });
+
   it("sets reconcileBackoffUntil for the executor to schedule a delayed reconcile", () => {
     const s = snapshot({ maxRetries: 3 }, { state: WorkflowRunState.FAILED, retryCount: 0 });
     const action = reconcileStandalone(s);

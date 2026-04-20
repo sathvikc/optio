@@ -78,6 +78,9 @@ function decideFailed(snapshot: WorldSnapshot): StandaloneAction {
         retryCount: status.retryCount + 1,
         errorMessage: null,
         reconcileBackoffUntil: new Date(snapshot.now.getTime() + backoffMs),
+        // Clear stale finishedAt so decideRunning doesn't short-circuit
+        // the retry to COMPLETED when the worker advances to RUNNING.
+        finishedAt: null,
       },
       trigger: "auto_retry",
       reason: `auto_retry_${status.retryCount + 1}/${spec.maxRetries}`,
@@ -131,6 +134,9 @@ function interpretIntent(
         statusPatch: {
           errorMessage: null,
           retryCount: status.retryCount + 1,
+          // Clear stale finishedAt so decideRunning doesn't short-circuit
+          // the retry to COMPLETED when the worker advances to RUNNING.
+          finishedAt: null,
         },
         clearControlIntent: true,
         trigger: "user_retry",
