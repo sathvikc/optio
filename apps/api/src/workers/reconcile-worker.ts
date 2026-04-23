@@ -1,5 +1,5 @@
 import { Queue, Worker } from "bullmq";
-import { parseIntEnv, reconcileRepo, reconcileStandalone } from "@optio/shared";
+import { parseIntEnv, reconcileRepo, reconcileStandalone, reconcilePrReview } from "@optio/shared";
 import type { RunRef, Action } from "@optio/shared";
 import { getBullMQConnectionOptions } from "../services/redis-config.js";
 import { buildWorldSnapshot } from "../services/reconcile-snapshot.js";
@@ -33,7 +33,11 @@ export function startReconcileWorker() {
       }
 
       const action: Action =
-        snapshot.run.kind === "repo" ? reconcileRepo(snapshot) : reconcileStandalone(snapshot);
+        snapshot.run.kind === "repo"
+          ? reconcileRepo(snapshot)
+          : snapshot.run.kind === "pr-review"
+            ? reconcilePrReview(snapshot)
+            : reconcileStandalone(snapshot);
 
       const outcome: ExecuteOutcome = await executeAction(action, snapshot);
 
@@ -111,8 +115,8 @@ export function startReconcileResyncWorker() {
     "reconcile-resync",
     instrumentWorkerProcessor("reconcile-resync", async () => {
       const { db } = await import("../db/client.js");
-      const { tasks, workflowRuns } = await import("../db/schema.js");
-      const { TaskState, WorkflowRunState } = await import("@optio/shared");
+      const { tasks, workflowRuns, prReviews } = await import("../db/schema.js");
+      const { TaskState, WorkflowRunState, PrReviewState } = await import("@optio/shared");
       const { sql } = await import("drizzle-orm");
 
       const nonTerminalTasks = await db
@@ -125,11 +129,21 @@ export function startReconcileResyncWorker() {
         .from(workflowRuns)
         .where(sql`${workflowRuns.state} NOT IN ('completed')`);
 
+      const nonTerminalReviews = await db
+        .select({ id: prReviews.id })
+        .from(prReviews)
+        .where(sql`${prReviews.state} NOT IN ('cancelled')`);
+
       void TaskState;
       void WorkflowRunState;
+      void PrReviewState;
 
       logger.info(
-        { tasks: nonTerminalTasks.length, runs: nonTerminalRuns.length },
+        {
+          tasks: nonTerminalTasks.length,
+          runs: nonTerminalRuns.length,
+          reviews: nonTerminalReviews.length,
+        },
         "reconcile.resync.sweep",
       );
 
@@ -138,6 +152,9 @@ export function startReconcileResyncWorker() {
       }
       for (const r of nonTerminalRuns) {
         await enqueueReconcile({ kind: "standalone", id: r.id }, { reason: "resync" });
+      }
+      for (const r of nonTerminalReviews) {
+        await enqueueReconcile({ kind: "pr-review", id: r.id }, { reason: "resync" });
       }
     }),
     {

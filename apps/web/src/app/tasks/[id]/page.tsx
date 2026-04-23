@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { use, useState, useEffect, useRef, useCallback } from "react";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { useTask } from "@/hooks/use-task";
@@ -12,7 +13,6 @@ import { TokenRefreshBanner } from "@/components/token-refresh-banner";
 import { api } from "@/lib/api-client";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { classifyError } from "@optio/shared";
-import { ReviewDraftPanel } from "@/components/review-draft-panel";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import {
   Loader2,
@@ -42,9 +42,30 @@ import { AddDependencyDialog } from "@/components/add-dependency-dialog";
 
 export default function TaskDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const { task, events, pendingReason, pipelineProgress, stallInfo, loading, error, refresh } =
     useTask(id);
   usePageTitle(task?.title ?? "Task");
+
+  // Legacy redirect: /tasks/:id URLs that resolve to a pr_reviews row are
+  // PR reviews — send the user to the /reviews/:id detail page.
+  useEffect(() => {
+    if (!error) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getPrReview(id);
+        if (!cancelled && res?.review) {
+          router.replace(`/reviews/${id}`);
+        }
+      } catch {
+        // Not a PR review — leave the error UI in place.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [error, id, router]);
   const [actionLoading, setActionLoading] = useState(false);
   const [resumePrompt, setResumePrompt] = useState("");
   const [showTimeline, setShowTimeline] = useState(true);
@@ -896,13 +917,6 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
               Timeline
             </button>
           </div>
-
-          {/* Review Draft Panel (for pr_review tasks) */}
-          {task?.taskType === "pr_review" && (
-            <div className="shrink-0 px-4 pt-4">
-              <ReviewDraftPanel taskId={id} taskState={task.state} />
-            </div>
-          )}
 
           {/* Log content via LogViewer */}
           <div className="flex-1 overflow-hidden">

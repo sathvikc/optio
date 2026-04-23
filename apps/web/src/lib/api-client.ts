@@ -930,7 +930,7 @@ export const api = {
 
   deleteSkill: (id: string) => request<void>(`/api/skills/${id}`, { method: "DELETE" }),
 
-  // PR Reviews
+  // PR Reviews — canonical endpoints live under /api/pr-reviews.
   listPullRequests: (params?: { repoId?: string }) => {
     const qs = new URLSearchParams();
     if (params?.repoId) qs.set("repoId", params.repoId);
@@ -939,49 +939,60 @@ export const api = {
   },
 
   createPrReview: (data: { prUrl: string }) =>
-    request<{ task: any; draft: any }>("/api/pull-requests/review", {
+    request<{ review: any; run?: any }>("/api/pr-reviews", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  getReviewDraft: (taskId: string) => request<{ draft: any }>(`/api/tasks/${taskId}/review-draft`),
+  getPrReview: (id: string) => request<{ review: any }>(`/api/pr-reviews/${id}`),
 
-  updateReviewDraft: (
-    taskId: string,
+  listPrReviewRuns: (id: string) => request<{ runs: any[] }>(`/api/pr-reviews/${id}/runs`),
+
+  updatePrReview: (
+    id: string,
     data: {
-      summary?: string;
-      verdict?: string;
-      fileComments?: Array<{ path: string; line?: number; side?: string; body: string }>;
+      summary?: string | null;
+      verdict?: "approve" | "request_changes" | "comment" | null;
+      fileComments?: Array<{ path: string; line?: number; side?: string; body: string }> | null;
     },
   ) =>
-    request<{ draft: any }>(`/api/tasks/${taskId}/review-draft`, {
+    request<{ review: any }>(`/api/pr-reviews/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
-  submitReviewDraft: (taskId: string) =>
-    request<{ draft: any; reviewUrl?: string }>(`/api/tasks/${taskId}/review-draft/submit`, {
+  submitPrReview: (id: string) =>
+    request<{ review: any; reviewUrl?: string }>(`/api/pr-reviews/${id}/submit`, {
       method: "POST",
     }),
 
-  reReview: (taskId: string) =>
-    request<{ task: any; draft: any }>(`/api/tasks/${taskId}/review-draft/re-review`, {
+  reReviewPr: (id: string) =>
+    request<{ review: any; run: any }>(`/api/pr-reviews/${id}/re-review`, {
       method: "POST",
     }),
 
-  listReviewChat: (taskId: string) =>
+  cancelPrReview: (id: string) =>
+    request<{ ok: boolean }>(`/api/pr-reviews/${id}/cancel`, { method: "POST" }),
+
+  listPrReviewLogs: (id: string, runId?: string) => {
+    const q = runId ? `?runId=${encodeURIComponent(runId)}` : "";
+    return request<{ logs: any[]; runId?: string }>(`/api/pr-reviews/${id}/logs${q}`);
+  },
+
+  listPrReviewChat: (id: string) =>
     request<{
       messages: Array<{
         id: string;
-        draftId: string;
+        prReviewId: string;
+        runId: string | null;
         role: "user" | "assistant";
         content: string;
         createdAt: string;
       }>;
-    }>(`/api/tasks/${taskId}/review-chat`),
+    }>(`/api/pr-reviews/${id}/chat`),
 
-  postReviewChat: (taskId: string, message: string) =>
-    request<{ turnTaskId: string; draftId: string }>(`/api/tasks/${taskId}/review-chat`, {
+  postPrReviewChat: (id: string, message: string) =>
+    request<{ runId: string; prReviewId: string }>(`/api/pr-reviews/${id}/chat`, {
       method: "POST",
       body: JSON.stringify({ message }),
     }),

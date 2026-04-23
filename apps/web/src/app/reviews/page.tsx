@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { api } from "@/lib/api-client";
-import { toast } from "sonner";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { api } from "@/lib/api-client";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import {
   Loader2,
@@ -21,8 +21,10 @@ import {
   Zap,
   GitMerge,
 } from "lucide-react";
+import { usePageTitle } from "@/hooks/use-page-title";
 
-export function PrBrowser() {
+export default function ReviewsPage() {
+  usePageTitle("Reviews");
   const router = useRouter();
   const [prs, setPrs] = useState<any[]>([]);
   const [repos, setRepos] = useState<any[]>([]);
@@ -73,7 +75,7 @@ export function PrBrowser() {
           });
           await api.submitPrReview(pr.review.id);
         } catch {
-          // Already submitted or not editable — continue.
+          // Already submitted or not editable — proceed with merge.
         }
       }
       await api.mergePullRequest({ prUrl: pr.url, mergeMethod: "squash" });
@@ -100,7 +102,7 @@ export function PrBrowser() {
     setSubmittingUrl(false);
   };
 
-  const draftStateBadge = (review: any) => {
+  const stateBadge = (review: any) => {
     if (!review) return null;
     const styles: Record<string, string> = {
       queued: "bg-warning/10 text-warning",
@@ -170,8 +172,11 @@ export function PrBrowser() {
   };
 
   return (
-    <div>
-      {/* URL input */}
+    <div className="p-6 max-w-5xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-bold tracking-tight">PR Reviews</h1>
+      </div>
+
       <div className="mb-4 flex items-center gap-2">
         <input
           value={prUrl}
@@ -194,7 +199,6 @@ export function PrBrowser() {
         </button>
       </div>
 
-      {/* Repo filter */}
       {repos.length > 1 && (
         <div className="mb-4">
           <select
@@ -251,7 +255,7 @@ export function PrBrowser() {
                         Draft
                       </span>
                     )}
-                    {pr.review && draftStateBadge(pr.review)}
+                    {pr.review && stateBadge(pr.review)}
                     {pr.review && verdictBadge(pr.review)}
                     {pr.review?.origin === "auto" && (
                       <span
@@ -276,7 +280,6 @@ export function PrBrowser() {
                     )}
                     <span>{formatRelativeTime(pr.updatedAt)}</span>
                   </div>
-                  {/* Labels */}
                   {pr.labels && pr.labels.length > 0 && (
                     <div className="flex items-center gap-1 mt-1.5">
                       {pr.labels.map((label: string) => (
@@ -291,7 +294,6 @@ export function PrBrowser() {
                   )}
                 </div>
 
-                {/* Action buttons */}
                 <div className="shrink-0 flex items-center gap-2">
                   {pr.review ? (
                     <Link

@@ -1,6 +1,7 @@
 import type { TaskState } from "./task.js";
 import type { InteractiveSessionState } from "./session.js";
 import type { WorkflowRunState } from "./workflow.js";
+import type { PrReviewState, PrReviewRunState } from "./pr-review.js";
 
 export type WsEvent =
   | TaskStateChangedEvent
@@ -18,6 +19,10 @@ export type WsEvent =
   | TaskMessageDeliveredEvent
   | WorkflowRunStateChangedEvent
   | WorkflowRunLogEvent
+  | PrReviewStateChangedEvent
+  | PrReviewRunStateChangedEvent
+  | PrReviewRunLogEvent
+  | PrReviewStaleEvent
   | ActivityNewEvent;
 
 export interface TaskStateChangedEvent {
@@ -158,4 +163,41 @@ export interface WorkflowRunLogEvent {
   timestamp: string;
   logType?: string;
   metadata?: Record<string, unknown>;
+}
+
+// ── PR Review Events ────────────────────────────────────────────────────────
+
+export interface PrReviewStateChangedEvent {
+  type: "pr_review:state_changed";
+  prReviewId: string;
+  fromState: PrReviewState | null;
+  toState: PrReviewState;
+  trigger: string;
+  timestamp: string;
+}
+
+export interface PrReviewRunStateChangedEvent {
+  type: "pr_review_run:state_changed";
+  prReviewId: string;
+  runId: string;
+  fromState: PrReviewRunState | null;
+  toState: PrReviewRunState;
+  timestamp: string;
+}
+
+export interface PrReviewRunLogEvent {
+  type: "pr_review_run:log";
+  prReviewId: string;
+  runId: string;
+  stream: "stdout" | "stderr";
+  content: string;
+  timestamp: string;
+  logType?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PrReviewStaleEvent {
+  type: "pr_review:stale";
+  prReviewId: string;
+  timestamp: string;
 }

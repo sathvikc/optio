@@ -1,5 +1,17 @@
+/**
+ * PR Review service — operates on the `pr_reviews` primitive.
+ *
+ * Each `pr_reviews` row is the canonical record of a review attached to a
+ * single PR. Agent executions live in `pr_review_runs` (initial / rereview
+ * / chat). State transitions are recorded in `pr_review_events`.
+ *
+ * The agent itself runs on the repo-pod infrastructure via the dedicated
+ * `pr-review-worker`. This service owns DB manipulations and the HTTP
+ * surface; the worker owns pod + exec + log streaming + output parsing.
+ */
 import {
-  TaskState,
+  PrReviewState,
+  PrReviewRunState,
   DEFAULT_PR_REVIEW_PROMPT_TEMPLATE,
   REVIEW_TASK_FILE_PATH,
   PR_REVIEW_OUTPUT_PATH,
@@ -7,21 +19,80 @@ import {
   normalizeRepoUrl,
   parsePrUrl,
   parseRepoUrl,
+  type PrReviewRunKind,
+  type PrReviewVerdict,
+  type PrReviewOrigin,
+  type PrReviewFileComment,
 } from "@optio/shared";
 import { db } from "../db/client.js";
-import { repos, tasks, taskLogs, reviewDrafts, reviewChatMessages } from "../db/schema.js";
-import { eq, and, sql, asc } from "drizzle-orm";
-import * as taskService from "./task-service.js";
+import {
+  repos,
+  tasks,
+  prReviews,
+  prReviewRuns,
+  prReviewEvents,
+  prReviewChatMessages,
+  taskLogs,
+} from "../db/schema.js";
+import { eq, and, sql, asc, desc, inArray } from "drizzle-orm";
 import { getGitPlatformForRepo } from "./git-token-service.js";
-import { taskQueue } from "../workers/task-worker.js";
+import { enqueueReconcile } from "./reconcile-queue.js";
 import { publishEvent } from "./event-bus.js";
 import { logger } from "../logger.js";
+
+export type PrReview = typeof prReviews.$inferSelect;
+export type PrReviewRun = typeof prReviewRuns.$inferSelect;
+
+// ── Transition helper ───────────────────────────────────────────────────────
+
+export async function transitionPrReview(
+  id: string,
+  to: PrReviewState,
+  trigger: string,
+  opts?: { message?: string; userId?: string; runId?: string },
+): Promise<PrReview | null> {
+  const [current] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  if (!current) return null;
+  const fromState = current.state as PrReviewState;
+  if (fromState === to) return current;
+
+  const [updated] = await db
+    .update(prReviews)
+    .set({ state: to, updatedAt: new Date() })
+    .where(eq(prReviews.id, id))
+    .returning();
+  if (!updated) return null;
+
+  await db.insert(prReviewEvents).values({
+    prReviewId: id,
+    runId: opts?.runId ?? null,
+    fromState,
+    toState: to,
+    trigger,
+    message: opts?.message ?? null,
+    userId: opts?.userId ?? null,
+  });
+
+  await publishEvent({
+    type: "pr_review:state_changed" as never,
+    prReviewId: id,
+    fromState,
+    toState: to,
+    trigger,
+    timestamp: new Date().toISOString(),
+  } as never).catch(() => {});
+
+  // Poke the reconciler so downstream decisions fire promptly.
+  await enqueueReconcile({ kind: "pr-review", id }, { reason: `transition:${to}` }).catch(() => {});
+
+  return updated;
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Fetch PR context: description, existing reviews, comments.
- * Uses the GitPlatform abstraction for both GitHub and GitLab.
+ * Fetch PR context: description, existing reviews, comments. Used to build
+ * the review prompt's context file.
  */
 async function fetchPrContext(
   repoUrl: string,
@@ -40,7 +111,7 @@ async function fetchPrContext(
     server: !userId,
   });
 
-  const result = {
+  const out = {
     prTitle: "",
     prBody: "",
     headSha: "",
@@ -49,50 +120,101 @@ async function fetchPrContext(
     inlineComments: "",
   };
 
-  // Fetch PR data
   const prData = await platform.getPullRequest(ri, prNumber);
-  result.prTitle = prData.title;
-  result.prBody = prData.body;
-  result.headSha = prData.headSha;
+  out.prTitle = prData.title;
+  out.prBody = prData.body;
+  out.headSha = prData.headSha;
 
-  // Fetch existing reviews
   try {
     const reviews = await platform.getReviews(ri, prNumber);
     const withBody = reviews.filter((r) => r.body?.trim());
     if (withBody.length > 0) {
-      result.existingReviews = withBody
+      out.existingReviews = withBody
         .map((r) => `**${r.author}** (${r.state}):\n${r.body}`)
         .join("\n\n");
     }
   } catch {}
 
-  // Fetch PR discussion comments
   try {
     const comments = await platform.getIssueComments(ri, prNumber);
     if (comments.length > 0) {
-      result.prComments = comments
+      out.prComments = comments
         .map((c) => `**${c.author}** (${c.createdAt}):\n${c.body}`)
         .join("\n\n");
     }
   } catch {}
 
-  // Fetch inline review comments
   try {
     const inlineComments = await platform.getInlineComments(ri, prNumber);
     if (inlineComments.length > 0) {
-      result.inlineComments = inlineComments
+      out.inlineComments = inlineComments
         .map((c) => `**${c.author}** on \`${c.path}${c.line ? `:${c.line}` : ""}\`:\n${c.body}`)
         .join("\n\n");
     }
   } catch {}
 
-  return result;
+  return out;
+}
+
+function reviewContextFileContent(ctx: {
+  prNumber: number;
+  prUrl: string;
+  prTitle: string;
+  prBody: string;
+  existingReviews: string;
+  prComments: string;
+  inlineComments: string;
+  baseBranch: string;
+}) {
+  const parts = [
+    `# Review Context`,
+    ``,
+    `## PR #${ctx.prNumber}: ${ctx.prTitle}`,
+    `- URL: ${ctx.prUrl}`,
+    `- Base: ${ctx.baseBranch}`,
+  ];
+  if (ctx.prBody) parts.push(``, `## PR Description`, ``, ctx.prBody);
+  if (ctx.existingReviews) parts.push(``, `## Existing Reviews`, ``, ctx.existingReviews);
+  if (ctx.prComments) parts.push(``, `## PR Discussion`, ``, ctx.prComments);
+  if (ctx.inlineComments) parts.push(``, `## Inline Code Comments`, ``, ctx.inlineComments);
+  return parts.join("\n");
 }
 
 // ── List open PRs ───────────────────────────────────────────────────────────
 
-export async function listOpenPrs(workspaceId: string | undefined, repoId?: string) {
-  // Get repos for workspace
+/**
+ * Return open PRs across configured repos with their (optional) attached
+ * pr_reviews record. Used by the /reviews list page.
+ */
+export interface PullRequestSummary {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  draft: boolean;
+  url: string;
+  headSha: string;
+  baseBranch: string;
+  author: string | null;
+  assignees: string[];
+  labels: string[];
+  repo: { id: string; fullName: string; repoUrl: string };
+  createdAt: string;
+  updatedAt: string;
+  review: {
+    id: string;
+    state: string;
+    verdict: string | null;
+    origin: string;
+    updatedAt: Date;
+  } | null;
+}
+
+export async function listOpenPrs(
+  workspaceId: string | undefined,
+  repoId?: string,
+): Promise<PullRequestSummary[]> {
   let repoList: (typeof repos.$inferSelect)[];
   if (repoId) {
     const [repo] = await db.select().from(repos).where(eq(repos.id, repoId));
@@ -109,13 +231,10 @@ export async function listOpenPrs(workspaceId: string | undefined, repoId?: stri
 
   if (repoList.length === 0) return [];
 
-  // Get existing review drafts to cross-reference
-  const existingDrafts = await db.select().from(reviewDrafts);
-  const draftMap = new Map(
-    existingDrafts.map((d) => [`${d.repoOwner}/${d.repoName}#${d.prNumber}`, d]),
-  );
+  const existing = await db.select().from(prReviews);
+  const reviewByUrl = new Map(existing.map((r) => [r.prUrl, r]));
 
-  const allPrs: any[] = [];
+  const allPrs: PullRequestSummary[] = [];
 
   for (const repo of repoList) {
     try {
@@ -123,18 +242,20 @@ export async function listOpenPrs(workspaceId: string | undefined, repoId?: stri
       if (!ri) continue;
 
       const { platform } = await getGitPlatformForRepo(repo.repoUrl, { server: true }).catch(
-        () => ({ platform: null }),
+        () => ({
+          platform: null as unknown as Awaited<
+            ReturnType<typeof getGitPlatformForRepo>
+          >["platform"],
+        }),
       );
       if (!platform) continue;
 
       const prs = await platform.listOpenPullRequests(ri, { perPage: 50 });
 
       for (const pr of prs) {
-        const draftKey = `${ri.owner}/${ri.repo}#${pr.number}`;
-        const existingDraft = draftMap.get(draftKey);
-
+        const review = reviewByUrl.get(pr.url);
         allPrs.push({
-          id: pr.number, // Use number as ID for platform-neutral code
+          id: pr.number,
           number: pr.number,
           title: pr.title,
           body: pr.body,
@@ -146,19 +267,16 @@ export async function listOpenPrs(workspaceId: string | undefined, repoId?: stri
           author: pr.author || null,
           assignees: pr.assignees,
           labels: pr.labels,
-          repo: {
-            id: repo.id,
-            fullName: repo.fullName,
-            repoUrl: repo.repoUrl,
-          },
+          repo: { id: repo.id, fullName: repo.fullName, repoUrl: repo.repoUrl },
           createdAt: pr.createdAt,
           updatedAt: pr.updatedAt,
-          reviewDraft: existingDraft
+          review: review
             ? {
-                id: existingDraft.id,
-                taskId: existingDraft.taskId,
-                state: existingDraft.state,
-                verdict: existingDraft.verdict,
+                id: review.id,
+                state: review.state,
+                verdict: review.verdict,
+                origin: review.origin,
+                updatedAt: review.updatedAt,
               }
             : null,
         });
@@ -168,378 +286,460 @@ export async function listOpenPrs(workspaceId: string | undefined, repoId?: stri
     }
   }
 
-  // Sort: un-reviewed first, then by updated date
+  // Sort: un-reviewed first, then most-recently-updated.
   allPrs.sort((a, b) => {
-    if (a.reviewDraft && !b.reviewDraft) return 1;
-    if (!a.reviewDraft && b.reviewDraft) return -1;
+    if (a.review && !b.review) return 1;
+    if (!a.review && b.review) return -1;
     return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
 
   return allPrs;
 }
 
-// ── Launch PR Review ────────────────────────────────────────────────────────
+// ── Create / launch ─────────────────────────────────────────────────────────
 
-export async function launchPrReview(input: {
+interface LaunchPrReviewInput {
   prUrl: string;
   workspaceId?: string;
   createdBy?: string;
-  origin?: "manual" | "auto";
-  existingDraftId?: string; // if set, replace this draft's task instead of creating a new draft row
-}) {
+  origin?: PrReviewOrigin;
+  /** Start in waiting_ci if the repo wants CI to clear first. */
+  startInWaitingCi?: boolean;
+}
+
+/**
+ * Create a fresh pr_reviews record and enqueue the initial run. If a
+ * pr_reviews row already exists for the PR URL, promote it to reviewing
+ * and spawn a rereview run rather than duplicating.
+ */
+export async function launchPrReview(input: LaunchPrReviewInput) {
   const parsed = parsePrUrl(input.prUrl);
   if (!parsed) throw new Error("Invalid PR URL");
 
   const { owner, repo: repoName, prNumber } = parsed;
   const repoUrl = normalizeRepoUrl(`https://${parsed.host}/${owner}/${repoName}`);
 
-  // Validate repo is configured
   const { getRepoByUrl } = await import("./repo-service.js");
   const repoConfig = await getRepoByUrl(repoUrl, input.workspaceId);
   if (!repoConfig) {
     throw new Error(`Repository ${owner}/${repoName} is not configured in Optio. Add it first.`);
   }
 
-  // Fetch PR context using platform abstraction
+  // Fetch PR context up-front to pin head_sha and build prompt.
   const prContext = await fetchPrContext(repoUrl, prNumber, input.createdBy);
   if (!prContext.headSha) throw new Error("Could not determine PR head SHA");
 
-  // Create the task
-  const task = await taskService.createTask({
-    title: `Review: PR #${prNumber} - ${prContext.prTitle}`,
-    prompt: `Review PR #${prNumber} in ${owner}/${repoName}`,
-    repoUrl,
-    agentType: "claude-code",
-    metadata: { prUrl: input.prUrl, prNumber },
-    createdBy: input.createdBy,
-    workspaceId: input.workspaceId ?? null,
-  });
-
-  // Set taskType to pr_review. Deliberately do NOT persist prUrl/prNumber on
-  // the task row — those columns mean "the PR this task opened" for coding
-  // tasks, and the reconciler will try to auto-merge anything it finds there.
-  // The external PR being reviewed is tracked on review_drafts instead.
-  await db.update(tasks).set({ taskType: "pr_review" }).where(eq(tasks.id, task.id));
-
-  // Create or promote review draft row
   const origin = input.origin ?? "manual";
-  let draft;
-  if (input.existingDraftId) {
-    [draft] = await db
-      .update(reviewDrafts)
+
+  // Upsert pr_reviews row.
+  const [existing] = await db.select().from(prReviews).where(eq(prReviews.prUrl, input.prUrl));
+  let review: PrReview;
+  if (existing) {
+    // Reset to queued/reviewing with fresh head_sha. Keep origin sticky —
+    // a manual launch on top of an auto review flips to manual so the
+    // auto-rereview flow no longer applies.
+    [review] = await db
+      .update(prReviews)
       .set({
-        taskId: task.id,
         headSha: prContext.headSha,
-        state: "drafting",
+        state: input.startInWaitingCi ? PrReviewState.WAITING_CI : PrReviewState.QUEUED,
         origin,
-        userEngaged: false,
-        autoSubmitted: false,
         verdict: null,
         summary: null,
         fileComments: null,
         submittedAt: null,
+        autoSubmitted: false,
+        errorMessage: null,
+        controlIntent: null,
+        reconcileBackoffUntil: null,
+        reconcileAttempts: 0,
         updatedAt: new Date(),
       })
-      .where(eq(reviewDrafts.id, input.existingDraftId))
+      .where(eq(prReviews.id, existing.id))
       .returning();
+    await db.insert(prReviewEvents).values({
+      prReviewId: review.id,
+      fromState: existing.state as PrReviewState,
+      toState: review.state as PrReviewState,
+      trigger: origin === "auto" ? "auto_relaunch" : "user_relaunch",
+    });
   } else {
-    [draft] = await db
-      .insert(reviewDrafts)
+    [review] = await db
+      .insert(prReviews)
       .values({
-        taskId: task.id,
+        workspaceId: input.workspaceId ?? null,
         prUrl: input.prUrl,
         prNumber,
         repoOwner: owner,
         repoName,
+        repoUrl,
         headSha: prContext.headSha,
-        state: "drafting",
+        state: input.startInWaitingCi ? PrReviewState.WAITING_CI : PrReviewState.QUEUED,
         origin,
+        createdBy: input.createdBy ?? null,
       })
       .returning();
+    await db.insert(prReviewEvents).values({
+      prReviewId: review.id,
+      toState: review.state as PrReviewState,
+      trigger: origin === "auto" ? "auto_created" : "user_created",
+    });
   }
 
-  // Build the review prompt
-  const reviewTemplate = repoConfig.reviewPromptTemplate ?? DEFAULT_PR_REVIEW_PROMPT_TEMPLATE;
-  const fullRepoName = `${owner}/${repoName}`;
+  // If we're starting in waiting_ci the reconciler will launch the run
+  // once CI resolves; nothing more to do here.
+  if (review.state === PrReviewState.WAITING_CI) {
+    await enqueueReconcile(
+      { kind: "pr-review", id: review.id },
+      { reason: "waiting_ci_initial" },
+    ).catch(() => {});
+    return { review };
+  }
 
-  const parsedRepoUrl = parseRepoUrl(repoUrl);
-  const isGitLab = parsedRepoUrl?.platform === "gitlab";
-
-  const renderedPrompt = renderPromptTemplate(reviewTemplate, {
-    PR_NUMBER: String(prNumber),
-    TASK_FILE: REVIEW_TASK_FILE_PATH,
-    REPO_NAME: fullRepoName,
-    TASK_TITLE: prContext.prTitle,
-    TEST_COMMAND: repoConfig.testCommand ?? "",
-    OUTPUT_PATH: PR_REVIEW_OUTPUT_PATH,
-    GIT_PLATFORM_GITLAB: isGitLab ? "true" : "",
+  // Otherwise enqueue the initial run immediately.
+  const run = await enqueueReviewRun(review.id, "initial", {
+    prompt: undefined,
+    prContext,
+    repoConfig,
+    createdBy: input.createdBy,
   });
 
-  // Build review context file
-  const contextParts = [
-    `# Review Context`,
-    ``,
-    `## PR #${prNumber}: ${prContext.prTitle}`,
-    `- URL: ${input.prUrl}`,
-    `- Author: unknown`,
-    `- Base: ${repoConfig.defaultBranch}`,
-  ];
+  return { review, run };
+}
 
-  if (prContext.prBody) {
-    contextParts.push(``, `## PR Description`, ``, prContext.prBody);
-  }
-  if (prContext.existingReviews) {
-    contextParts.push(``, `## Existing Reviews`, ``, prContext.existingReviews);
-  }
-  if (prContext.prComments) {
-    contextParts.push(``, `## PR Discussion`, ``, prContext.prComments);
-  }
-  if (prContext.inlineComments) {
-    contextParts.push(``, `## Inline Code Comments`, ``, prContext.inlineComments);
+/**
+ * Create a fresh pr_review_runs row and push a job onto the worker queue.
+ * Transitions the parent pr_reviews row to `reviewing`.
+ *
+ * This is the single funnel for kicking off any kind of review run
+ * (initial / rereview / chat).
+ */
+// Just the fields enqueueReviewRun reads from the repo config. Accepts
+// both RepoRecord (from getRepoByUrl) and raw DB row shapes.
+interface RepoConfigLike {
+  defaultBranch: string;
+  reviewPromptTemplate?: string | null;
+  reviewModel?: string | null;
+  testCommand?: string | null;
+}
+
+export async function enqueueReviewRun(
+  prReviewId: string,
+  kind: PrReviewRunKind,
+  opts: {
+    prompt?: string;
+    resumeSessionId?: string;
+    prContext?: Awaited<ReturnType<typeof fetchPrContext>>;
+    repoConfig?: RepoConfigLike;
+    createdBy?: string;
+  },
+): Promise<PrReviewRun> {
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, prReviewId));
+  if (!review) throw new Error(`PR review ${prReviewId} not found`);
+
+  const repoConfig =
+    opts.repoConfig ??
+    (await (async () => {
+      const { getRepoByUrl } = await import("./repo-service.js");
+      return getRepoByUrl(review.repoUrl, review.workspaceId ?? undefined);
+    })());
+  if (!repoConfig) throw new Error(`Repo ${review.repoUrl} is not configured in Optio`);
+
+  // For initial/rereview we need fresh PR context to render the prompt.
+  // Chat turns reuse the prior session and just forward the user's text.
+  let renderedPrompt: string;
+  let taskFileContent: string;
+  let headSha = review.headSha;
+  if (kind === "chat") {
+    renderedPrompt = opts.prompt ?? "";
+    taskFileContent = "";
+  } else {
+    const prContext =
+      opts.prContext ?? (await fetchPrContext(review.repoUrl, review.prNumber, opts.createdBy));
+    headSha = prContext.headSha || headSha;
+
+    const template = repoConfig.reviewPromptTemplate ?? DEFAULT_PR_REVIEW_PROMPT_TEMPLATE;
+    const fullRepoName = `${review.repoOwner}/${review.repoName}`;
+    const parsedRepoUrl = parseRepoUrl(review.repoUrl);
+    const isGitLab = parsedRepoUrl?.platform === "gitlab";
+
+    renderedPrompt = renderPromptTemplate(template, {
+      PR_NUMBER: String(review.prNumber),
+      TASK_FILE: REVIEW_TASK_FILE_PATH,
+      REPO_NAME: fullRepoName,
+      TASK_TITLE: prContext.prTitle,
+      TEST_COMMAND: repoConfig.testCommand ?? "",
+      OUTPUT_PATH: PR_REVIEW_OUTPUT_PATH,
+      GIT_PLATFORM_GITLAB: isGitLab ? "true" : "",
+    });
+    taskFileContent = reviewContextFileContent({
+      prNumber: review.prNumber,
+      prUrl: review.prUrl,
+      prTitle: prContext.prTitle,
+      prBody: prContext.prBody,
+      existingReviews: prContext.existingReviews,
+      prComments: prContext.prComments,
+      inlineComments: prContext.inlineComments,
+      baseBranch: repoConfig.defaultBranch,
+    });
   }
 
-  const reviewContext = contextParts.join("\n");
-
-  // Queue the task
-  await taskService.transitionTask(task.id, TaskState.QUEUED, "pr_review_requested");
-  await taskQueue.add(
-    "process-task",
-    {
-      taskId: task.id,
-      reviewOverride: {
-        renderedPrompt,
-        taskFileContent: reviewContext,
+  const [run] = await db
+    .insert(prReviewRuns)
+    .values({
+      prReviewId,
+      kind,
+      state: PrReviewRunState.QUEUED,
+      prompt: renderedPrompt,
+      resumeSessionId: opts.resumeSessionId ?? null,
+      metadata: {
+        taskFileContent,
         taskFilePath: REVIEW_TASK_FILE_PATH,
         claudeModel: repoConfig.reviewModel ?? "sonnet",
       },
-    },
-    {
-      jobId: task.id,
-      priority: 10,
-    },
-  );
-
-  logger.info({ taskId: task.id, prNumber, owner, repo: repoName }, "PR review assistant launched");
-
-  return { task: { ...task, taskType: "pr_review", prUrl: input.prUrl, prNumber }, draft };
-}
-
-// ── Parse Review Output ─────────────────────────────────────────────────────
-
-export async function parseReviewOutput(taskId: string) {
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.taskId, taskId));
-
-  if (!draft) {
-    logger.warn({ taskId }, "No review draft found for task");
-    return;
-  }
-
-  // Search task logs for the review JSON output
-  const logs = await db
-    .select({ content: taskLogs.content, logType: taskLogs.logType })
-    .from(taskLogs)
-    .where(eq(taskLogs.taskId, taskId));
-
-  let parsed: { verdict?: string; summary?: string; fileComments?: any[] } | null = null;
-
-  // Try to find JSON in tool_result logs first, then in all logs
-  const allContent = logs.map((l) => l.content).join("\n");
-
-  // Try extracting JSON from a code block or raw content
-  const jsonPatterns = [
-    // JSON in a code block
-    /```(?:json)?\s*\n?(\{[\s\S]*?"verdict"[\s\S]*?\})\s*\n?```/,
-    // Raw JSON object with verdict field (greedy to capture nested objects like fileComments)
-    /(\{[\s\S]*?"verdict"\s*:\s*"[^"]*"[\s\S]*\})\s*$/m,
-    // Simpler fallback
-    /(\{[^{}]*"verdict"\s*:\s*"[^"]*"[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/,
-  ];
-
-  for (const pattern of jsonPatterns) {
-    const match = allContent.match(pattern);
-    if (match) {
-      try {
-        parsed = JSON.parse(match[1]);
-        break;
-      } catch {
-        // Try cleaning common issues
-        try {
-          const cleaned = match[1].replace(/,\s*([}\]])/g, "$1");
-          parsed = JSON.parse(cleaned);
-          break;
-        } catch {}
-      }
-    }
-  }
-
-  // Update the draft
-  const updates: Record<string, unknown> = {
-    state: "ready",
-    updatedAt: new Date(),
-  };
-
-  if (parsed?.verdict && ["approve", "request_changes", "comment"].includes(parsed.verdict)) {
-    updates.verdict = parsed.verdict;
-  }
-  if (parsed?.summary) {
-    updates.summary = parsed.summary;
-  }
-  if (parsed?.fileComments && Array.isArray(parsed.fileComments)) {
-    updates.fileComments = parsed.fileComments;
-  }
-
-  // If we couldn't parse structured JSON, fall back to the task's result summary
-  // which now contains the agent's actual output text (not just "Agent completed successfully")
-  if (!updates.summary) {
-    const task = await taskService.getTask(taskId);
-    if (
-      task?.resultSummary &&
-      !/^Agent (completed successfully|exited with code \d+)$/.test(task.resultSummary)
-    ) {
-      updates.summary = task.resultSummary;
-    }
-  }
-
-  await db.update(reviewDrafts).set(updates).where(eq(reviewDrafts.id, draft.id));
-
-  logger.info({ taskId, draftId: draft.id, hasStructuredOutput: !!parsed }, "Review output parsed");
-
-  // Auto-post for on_pr_post mode: if this draft came from the poller, submit
-  // the review to GitHub/GitLab immediately. We do this only for initial
-  // reviews (not chat resumes) and only for auto-origin drafts.
-  if (draft.origin === "auto" && !draft.userEngaged) {
-    try {
-      const { getRepoByUrl } = await import("./repo-service.js");
-      const repoUrl = normalizeRepoUrl(
-        `https://${parsePrUrl(draft.prUrl)?.host}/${draft.repoOwner}/${draft.repoName}`,
-      );
-      const repoConfig = await getRepoByUrl(repoUrl);
-      if (repoConfig?.externalReviewMode === "on_pr_post") {
-        await submitReview(draft.id);
-        await db
-          .update(reviewDrafts)
-          .set({ autoSubmitted: true, updatedAt: new Date() })
-          .where(eq(reviewDrafts.id, draft.id));
-        logger.info({ draftId: draft.id }, "Review auto-submitted (on_pr_post)");
-      }
-    } catch (err) {
-      logger.warn({ err, draftId: draft.id }, "Auto-submit failed — draft left in ready state");
-    }
-  }
-}
-
-// ── Get Review Draft ────────────────────────────────────────────────────────
-
-export async function getReviewDraft(taskId: string) {
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.taskId, taskId));
-  return draft ?? null;
-}
-
-// ── Update Review Draft ─────────────────────────────────────────────────────
-
-export async function updateReviewDraft(
-  draftId: string,
-  updates: {
-    summary?: string;
-    verdict?: string;
-    fileComments?: Array<{ path: string; line?: number; side?: string; body: string }>;
-  },
-) {
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.id, draftId));
-  if (!draft) throw new Error("Review draft not found");
-  if (!["ready", "stale"].includes(draft.state)) {
-    throw new Error(`Cannot edit draft in ${draft.state} state`);
-  }
-
-  const setFields: Record<string, unknown> = { updatedAt: new Date() };
-  if (updates.summary !== undefined) setFields.summary = updates.summary;
-  if (updates.verdict !== undefined) setFields.verdict = updates.verdict;
-  if (updates.fileComments !== undefined) setFields.fileComments = updates.fileComments;
-
-  const [updated] = await db
-    .update(reviewDrafts)
-    .set(setFields)
-    .where(eq(reviewDrafts.id, draftId))
+    })
     .returning();
 
+  // Ensure parent state reflects that a run is in flight.
+  if (review.state !== PrReviewState.REVIEWING) {
+    await transitionPrReview(prReviewId, PrReviewState.REVIEWING, `launch_${kind}`, {
+      runId: run.id,
+    });
+  }
+  // Pin the fresh head_sha if it drifted.
+  if (headSha !== review.headSha) {
+    await db
+      .update(prReviews)
+      .set({ headSha, updatedAt: new Date() })
+      .where(eq(prReviews.id, prReviewId));
+  }
+
+  const { prReviewRunQueue } = await import("../workers/pr-review-worker.js");
+  await prReviewRunQueue.add(
+    "process-pr-review-run",
+    { runId: run.id },
+    { jobId: run.id, priority: 10 },
+  );
+
+  logger.info(
+    { prReviewId, runId: run.id, kind, prNumber: review.prNumber },
+    "PR review run enqueued",
+  );
+
+  return run;
+}
+
+// ── Get / update ────────────────────────────────────────────────────────────
+
+export async function getPrReview(id: string): Promise<PrReview | null> {
+  const [row] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  return row ?? null;
+}
+
+export async function getPrReviewByPrUrl(prUrl: string): Promise<PrReview | null> {
+  const [row] = await db.select().from(prReviews).where(eq(prReviews.prUrl, prUrl));
+  return row ?? null;
+}
+
+export async function listPrReviewRuns(prReviewId: string): Promise<PrReviewRun[]> {
+  return db
+    .select()
+    .from(prReviewRuns)
+    .where(eq(prReviewRuns.prReviewId, prReviewId))
+    .orderBy(desc(prReviewRuns.createdAt));
+}
+
+export async function getLatestRun(prReviewId: string): Promise<PrReviewRun | null> {
+  const [run] = await db
+    .select()
+    .from(prReviewRuns)
+    .where(eq(prReviewRuns.prReviewId, prReviewId))
+    .orderBy(desc(prReviewRuns.createdAt))
+    .limit(1);
+  return run ?? null;
+}
+
+export async function updatePrReviewDraft(
+  id: string,
+  updates: {
+    summary?: string | null;
+    verdict?: PrReviewVerdict | null;
+    fileComments?: PrReviewFileComment[] | null;
+  },
+): Promise<PrReview> {
+  const [current] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  if (!current) throw new Error("PR review not found");
+  const editableStates: PrReviewState[] = [PrReviewState.READY, PrReviewState.STALE];
+  if (!editableStates.includes(current.state as PrReviewState)) {
+    throw new Error(`Cannot edit review in ${current.state} state`);
+  }
+  const patch: Record<string, unknown> = { updatedAt: new Date(), userEngaged: true };
+  if (updates.summary !== undefined) patch.summary = updates.summary;
+  if (updates.verdict !== undefined) patch.verdict = updates.verdict;
+  if (updates.fileComments !== undefined) patch.fileComments = updates.fileComments;
+  const [updated] = await db.update(prReviews).set(patch).where(eq(prReviews.id, id)).returning();
   return updated;
 }
 
-// ── Submit Review ───────────────────────────────────────────────────────────
+// ── Parse agent output ──────────────────────────────────────────────────────
 
-export async function submitReview(draftId: string, userId?: string) {
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.id, draftId));
-  if (!draft) throw new Error("Review draft not found");
-  if (!["ready", "stale"].includes(draft.state)) {
-    throw new Error(`Cannot submit draft in ${draft.state} state`);
+/**
+ * Parse the agent's JSON verdict block from a run's logs and apply it to
+ * the parent pr_reviews row. Called by the pr-review-worker after the
+ * initial/rereview agent exits cleanly.
+ */
+export async function parseReviewOutput(runId: string): Promise<void> {
+  const [run] = await db.select().from(prReviewRuns).where(eq(prReviewRuns.id, runId));
+  if (!run) return;
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, run.prReviewId));
+  if (!review) return;
+
+  const logs = await db
+    .select({ content: taskLogs.content })
+    .from(taskLogs)
+    .where(eq(taskLogs.prReviewRunId, runId));
+
+  const parsed = extractVerdictJson(logs.map((l) => l.content).join("\n"));
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (parsed?.verdict && ["approve", "request_changes", "comment"].includes(parsed.verdict)) {
+    updates.verdict = parsed.verdict;
+  }
+  if (parsed?.summary) updates.summary = parsed.summary;
+  if (Array.isArray(parsed?.fileComments)) updates.fileComments = parsed.fileComments;
+
+  // Fall back to the run's result summary if we couldn't parse JSON.
+  if (!updates.summary && run.resultSummary) {
+    if (!/^Agent (completed successfully|exited with code \d+)$/.test(run.resultSummary)) {
+      updates.summary = run.resultSummary;
+    }
   }
 
-  // Derive repo URL from the PR URL (supports both GitHub and GitLab)
-  const parsed = parsePrUrl(draft.prUrl);
-  const repoUrl = parsed
-    ? normalizeRepoUrl(`https://${parsed.host}/${parsed.owner}/${parsed.repo}`)
-    : normalizeRepoUrl(`https://github.com/${draft.repoOwner}/${draft.repoName}`);
+  await db.update(prReviews).set(updates).where(eq(prReviews.id, review.id));
+  await transitionPrReview(review.id, PrReviewState.READY, "agent_drafted", { runId });
+
+  logger.info(
+    { runId, prReviewId: review.id, hasStructuredOutput: !!parsed },
+    "PR review output parsed",
+  );
+
+  // Auto-submit if configured + still auto-origin + user hasn't engaged.
+  const { getRepoByUrl } = await import("./repo-service.js");
+  const repoConfig = await getRepoByUrl(review.repoUrl, review.workspaceId ?? undefined);
+  if (
+    review.origin === "auto" &&
+    !review.userEngaged &&
+    repoConfig?.externalReviewMode === "on_pr_post"
+  ) {
+    try {
+      await submitReview(review.id);
+      await db
+        .update(prReviews)
+        .set({ autoSubmitted: true, updatedAt: new Date() })
+        .where(eq(prReviews.id, review.id));
+      logger.info({ prReviewId: review.id }, "Review auto-submitted (on_pr_post)");
+    } catch (err) {
+      logger.warn({ err, prReviewId: review.id }, "Auto-submit failed — left in ready state");
+    }
+  }
+}
+
+function extractVerdictJson(
+  content: string,
+): { verdict?: string; summary?: string; fileComments?: unknown } | null {
+  const patterns = [
+    /```(?:json)?\s*\n?(\{[\s\S]*?"verdict"[\s\S]*?\})\s*\n?```/,
+    /(\{[\s\S]*?"verdict"\s*:\s*"[^"]*"[\s\S]*\})\s*$/m,
+    /(\{[^{}]*"verdict"\s*:\s*"[^"]*"[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/,
+  ];
+  for (const pat of patterns) {
+    const m = content.match(pat);
+    if (!m) continue;
+    try {
+      return JSON.parse(m[1]);
+    } catch {
+      try {
+        return JSON.parse(m[1].replace(/,\s*([}\]])/g, "$1"));
+      } catch {}
+    }
+  }
+  return null;
+}
+
+// ── Submit review ──────────────────────────────────────────────────────────
+
+export async function submitReview(
+  id: string,
+  userId?: string,
+): Promise<{ review: PrReview; reviewUrl?: string }> {
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  if (!review) throw new Error("PR review not found");
+  const submittable: PrReviewState[] = [PrReviewState.READY, PrReviewState.STALE];
+  if (!submittable.includes(review.state as PrReviewState)) {
+    throw new Error(`Cannot submit review in ${review.state} state`);
+  }
+
+  const repoUrl = review.repoUrl;
   const { platform, ri } = await getGitPlatformForRepo(repoUrl, {
     userId,
     server: !userId,
   });
 
-  // Map verdict to review event
   const eventMap: Record<string, "APPROVE" | "REQUEST_CHANGES" | "COMMENT"> = {
     approve: "APPROVE",
     request_changes: "REQUEST_CHANGES",
     comment: "COMMENT",
   };
-  const event = eventMap[draft.verdict ?? "comment"] ?? "COMMENT";
+  const event = eventMap[review.verdict ?? "comment"] ?? "COMMENT";
 
-  // Build inline comments
-  const comments = (draft.fileComments ?? [])
-    .filter((c: any) => c.path && c.body)
-    .map((c: any) => ({
+  const comments = (review.fileComments ?? [])
+    .filter((c) => c.path && c.body)
+    .map((c) => ({
       path: c.path,
       body: c.body,
       ...(c.line ? { line: c.line } : {}),
       ...(c.side ? { side: c.side } : {}),
     }));
 
-  const reviewResult = await platform.submitReview(ri, draft.prNumber, {
+  const result = await platform.submitReview(ri, review.prNumber, {
     event,
-    body: draft.summary ?? "Review by Optio",
+    body: review.summary ?? "Review by Optio",
     comments: comments.length > 0 ? comments : undefined,
   });
 
-  // Update draft state
-  const [updated] = await db
-    .update(reviewDrafts)
-    .set({
-      state: "submitted",
-      submittedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(reviewDrafts.id, draftId))
-    .returning();
-
-  logger.info({ draftId, prNumber: draft.prNumber, event }, "Review submitted");
-
-  return { draft: updated, reviewUrl: reviewResult.url };
-}
-
-// ── Re-review ───────────────────────────────────────────────────────────────
-
-export async function reReview(taskId: string, userId?: string, workspaceId?: string) {
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.taskId, taskId));
-  if (!draft) throw new Error("No review draft found for task");
-
-  // User-initiated re-review: mark origin manual so auto-submit does not kick in.
-  return launchPrReview({
-    prUrl: draft.prUrl,
-    workspaceId,
-    createdBy: userId,
-    origin: "manual",
+  await db
+    .update(prReviews)
+    .set({ submittedAt: new Date(), updatedAt: new Date() })
+    .where(eq(prReviews.id, id));
+  const updated = await transitionPrReview(id, PrReviewState.SUBMITTED, "user_submit", {
+    userId,
   });
+
+  return { review: updated ?? review, reviewUrl: result.url };
 }
 
-// ── Merge PR ────────────────────────────────────────────────────────────────
+// ── Re-review ──────────────────────────────────────────────────────────────
+
+export async function reReview(
+  id: string,
+  userId?: string,
+): Promise<{ review: PrReview; run: PrReviewRun }> {
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  if (!review) throw new Error("PR review not found");
+
+  // Mark as manual origin on user-initiated re-review so auto-submit
+  // doesn't kick in.
+  await db
+    .update(prReviews)
+    .set({ origin: "manual", userEngaged: true, updatedAt: new Date() })
+    .where(eq(prReviews.id, id));
+
+  const run = await enqueueReviewRun(id, "rereview", { createdBy: userId });
+  const [fresh] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  return { review: fresh, run };
+}
+
+// ── Merge PR ───────────────────────────────────────────────────────────────
 
 export async function mergePr(input: {
   prUrl: string;
@@ -561,7 +761,7 @@ export async function mergePr(input: {
   return { merged: true };
 }
 
-// ── Get PR Status ───────────────────────────────────────────────────────────
+// ── Get PR status (used by /reviews detail + poller) ────────────────────────
 
 export async function getPrStatus(prUrl: string) {
   const parsed = parsePrUrl(prUrl);
@@ -572,7 +772,6 @@ export async function getPrStatus(prUrl: string) {
 
   const prData = await platform.getPullRequest(ri, parsed.prNumber);
 
-  // Fetch check runs
   const checkRuns = await platform.getCIChecks(ri, prData.headSha).catch(() => []);
   let checksStatus = "none";
   if (checkRuns.length > 0) {
@@ -583,7 +782,6 @@ export async function getPrStatus(prUrl: string) {
     checksStatus = !allComplete ? "pending" : allSuccess ? "passing" : "failing";
   }
 
-  // Fetch reviews
   const reviews = await platform.getReviews(ri, parsed.prNumber).catch(() => []);
   let reviewStatus = "none";
   if (reviews.length > 0) {
@@ -610,205 +808,190 @@ export async function getPrStatus(prUrl: string) {
   };
 }
 
-// ── Mark Draft Stale ────────────────────────────────────────────────────────
+// ── Mark stale (called by pr-watcher when head_sha drifts) ──────────────────
 
-export async function markDraftStale(draftId: string) {
-  const [updated] = await db
-    .update(reviewDrafts)
-    .set({ state: "stale", updatedAt: new Date() })
-    .where(and(eq(reviewDrafts.id, draftId), eq(reviewDrafts.state, "ready")))
+export async function markStale(prReviewId: string): Promise<PrReview | null> {
+  const [row] = await db
+    .update(prReviews)
+    .set({ state: PrReviewState.STALE, updatedAt: new Date() })
+    .where(and(eq(prReviews.id, prReviewId), eq(prReviews.state, PrReviewState.READY)))
     .returning();
-
-  if (updated) {
-    await publishEvent({
-      type: "review_draft:stale",
-      taskId: updated.taskId,
-      timestamp: new Date().toISOString(),
-    } as any);
-  }
-
-  return updated ?? null;
+  if (!row) return null;
+  await db.insert(prReviewEvents).values({
+    prReviewId,
+    fromState: PrReviewState.READY,
+    toState: PrReviewState.STALE,
+    trigger: "new_commits",
+  });
+  await publishEvent({
+    type: "pr_review:stale" as never,
+    prReviewId,
+    timestamp: new Date().toISOString(),
+  } as never).catch(() => {});
+  return row;
 }
 
-// ── Review Chat ─────────────────────────────────────────────────────────────
-//
-// Each chat turn spawns a fresh pr_review task that resumes the original
-// Claude session (via resumeSessionId). The new task's completion hook
-// appends the assistant's reply to review_chat_messages and — if the agent
-// emits a fresh JSON verdict block — updates the draft.
-//
-// The initial review task sets the session; follow-up chat turns reuse it,
-// so the agent keeps full context from the review itself.
+// ── Chat ────────────────────────────────────────────────────────────────────
 
-function findRootReviewTaskId(draft: { taskId: string | null }): string | null {
-  return draft.taskId;
-}
-
-export async function listReviewChat(draftId: string) {
+export async function listReviewChat(prReviewId: string) {
   return db
     .select()
-    .from(reviewChatMessages)
-    .where(eq(reviewChatMessages.draftId, draftId))
-    .orderBy(asc(reviewChatMessages.createdAt));
-}
-
-export async function postReviewChat(input: {
-  taskId: string;
-  message: string;
-  userId?: string;
-  workspaceId?: string;
-}) {
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.taskId, input.taskId));
-  if (!draft) throw new Error("No review draft found for task");
-  if (draft.state === "drafting" || draft.state === "waiting_ci") {
-    throw new Error("Cannot chat while a review is still being generated");
-  }
-
-  // Load the root review task to pull the session id + repo url.
-  const rootTaskId = findRootReviewTaskId(draft);
-  if (!rootTaskId) throw new Error("Draft has no root task — cannot chat");
-  const rootTask = await taskService.getTask(rootTaskId);
-  if (!rootTask) throw new Error("Root review task not found");
-  if (!rootTask.sessionId) {
-    throw new Error("Root review task has no captured session — chat not available yet");
-  }
-
-  // Record the user's turn + flag engagement so the poller stops auto-reruns.
-  await db.insert(reviewChatMessages).values({
-    draftId: draft.id,
-    role: "user",
-    content: input.message,
-  });
-  await db
-    .update(reviewDrafts)
-    .set({ userEngaged: true, updatedAt: new Date() })
-    .where(eq(reviewDrafts.id, draft.id));
-
-  // Spawn a fresh pr_review task dedicated to this turn. taskType stays
-  // `pr_review` so the task-worker's review-aware branches (isReviewTask*,
-  // completion-hook routing) apply unchanged.
-  const turnTask = await taskService.createTask({
-    title: `Review chat: ${rootTask.title}`,
-    prompt: input.message,
-    repoUrl: rootTask.repoUrl,
-    agentType: rootTask.agentType,
-    metadata: {
-      reviewDraftId: draft.id,
-      reviewChatTurn: true,
-      rootReviewTaskId: rootTaskId,
-      prUrl: draft.prUrl,
-      prNumber: draft.prNumber,
-    },
-    createdBy: input.userId,
-    workspaceId: input.workspaceId ?? null,
-  });
-
-  // See note in launchPrReview: prUrl/prNumber stay null on pr_review rows.
-  await db.update(tasks).set({ taskType: "pr_review" }).where(eq(tasks.id, turnTask.id));
-
-  // Look up the repo config — needed for claudeModel override on resume.
-  const { getRepoByUrl } = await import("./repo-service.js");
-  const repoConfig = await getRepoByUrl(rootTask.repoUrl, input.workspaceId);
-
-  await taskService.transitionTask(turnTask.id, TaskState.QUEUED, "review_chat_requested");
-  await taskQueue.add(
-    "process-task",
-    {
-      taskId: turnTask.id,
-      resumeSessionId: rootTask.sessionId,
-      // OPTIO_PROMPT must contain just the user's message so the resumed
-      // session gets a clean next-turn input (without the original review
-      // context being re-prepended).
-      reviewOverride: {
-        renderedPrompt: input.message,
-        taskFileContent: "",
-        taskFilePath: REVIEW_TASK_FILE_PATH,
-        claudeModel: repoConfig?.reviewModel ?? "sonnet",
-      },
-    },
-    {
-      jobId: turnTask.id,
-      priority: 10,
-    },
-  );
-
-  return { turnTaskId: turnTask.id, draftId: draft.id };
+    .from(prReviewChatMessages)
+    .where(eq(prReviewChatMessages.prReviewId, prReviewId))
+    .orderBy(asc(prReviewChatMessages.createdAt));
 }
 
 /**
- * Completion hook for a chat-turn task. Pulls the agent's reply out of the
- * task logs, stores it as an assistant message, and — if the reply contains
- * a fresh JSON verdict block — updates the draft in place. Called from
- * task-worker instead of parseReviewOutput for tasks with
- * `metadata.reviewChatTurn === true`.
+ * Post a user chat turn. Records the user message, flips `userEngaged`,
+ * and spawns a chat run that resumes the initial review's agent session.
  */
-export async function appendChatReplyFromOutput(taskId: string) {
-  const task = await taskService.getTask(taskId);
-  if (!task) return;
-  const draftId = (task.metadata as Record<string, unknown> | null)?.reviewDraftId as
-    | string
-    | undefined;
-  if (!draftId) return;
-  const [draft] = await db.select().from(reviewDrafts).where(eq(reviewDrafts.id, draftId));
-  if (!draft) return;
+export async function postReviewChat(input: {
+  prReviewId: string;
+  message: string;
+  userId?: string;
+}) {
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, input.prReviewId));
+  if (!review) throw new Error("PR review not found");
+
+  if (
+    review.state === PrReviewState.REVIEWING ||
+    review.state === PrReviewState.WAITING_CI ||
+    review.state === PrReviewState.QUEUED
+  ) {
+    throw new Error("Cannot chat while a review is still being generated");
+  }
+
+  // Find the most recent non-chat run to resume from.
+  const [rootRun] = await db
+    .select()
+    .from(prReviewRuns)
+    .where(
+      and(
+        eq(prReviewRuns.prReviewId, review.id),
+        sql`${prReviewRuns.kind} IN ('initial','rereview')`,
+      ),
+    )
+    .orderBy(desc(prReviewRuns.createdAt))
+    .limit(1);
+  if (!rootRun) throw new Error("No prior review run to resume from");
+  if (!rootRun.sessionId) {
+    throw new Error("Prior review run has no captured session — chat not available yet");
+  }
+
+  await db.insert(prReviewChatMessages).values({
+    prReviewId: review.id,
+    role: "user",
+    content: input.message,
+  });
+
+  await db
+    .update(prReviews)
+    .set({ userEngaged: true, updatedAt: new Date() })
+    .where(eq(prReviews.id, review.id));
+
+  const run = await enqueueReviewRun(review.id, "chat", {
+    prompt: input.message,
+    resumeSessionId: rootRun.sessionId,
+    createdBy: input.userId,
+  });
+
+  return { runId: run.id, prReviewId: review.id };
+}
+
+/**
+ * Called by pr-review-worker after a chat run completes. Appends the
+ * assistant's reply to chat messages; if the reply carries a fresh JSON
+ * verdict block, patches the draft in place.
+ */
+export async function appendChatReplyFromRun(runId: string): Promise<void> {
+  const [run] = await db.select().from(prReviewRuns).where(eq(prReviewRuns.id, runId));
+  if (!run) return;
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, run.prReviewId));
+  if (!review) return;
 
   const logs = await db
     .select({ content: taskLogs.content })
     .from(taskLogs)
-    .where(eq(taskLogs.taskId, taskId));
+    .where(eq(taskLogs.prReviewRunId, runId));
   const allContent = logs.map((l) => l.content).join("\n");
 
-  // Try to extract a JSON verdict block — same patterns as parseReviewOutput.
-  const jsonPatterns = [
+  const parsed = extractVerdictJson(allContent);
+  let jsonMatch: string | null = null;
+  const patterns = [
     /```(?:json)?\s*\n?(\{[\s\S]*?"verdict"[\s\S]*?\})\s*\n?```/,
     /(\{[\s\S]*?"verdict"\s*:\s*"[^"]*"[\s\S]*\})\s*$/m,
     /(\{[^{}]*"verdict"\s*:\s*"[^"]*"[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/,
   ];
-  let parsed: { verdict?: string; summary?: string; fileComments?: any[] } | null = null;
-  let jsonMatch: string | null = null;
-  for (const pattern of jsonPatterns) {
-    const m = allContent.match(pattern);
+  for (const pat of patterns) {
+    const m = allContent.match(pat);
     if (m) {
       jsonMatch = m[1];
-      try {
-        parsed = JSON.parse(m[1]);
-        break;
-      } catch {
-        try {
-          parsed = JSON.parse(m[1].replace(/,\s*([}\]])/g, "$1"));
-          break;
-        } catch {}
-      }
+      break;
     }
   }
 
-  // Reply body = the agent's final text summary, with any JSON block stripped.
-  let reply = task.resultSummary?.trim() || "";
+  let reply = run.resultSummary?.trim() || "";
   if (!reply || /^Agent (completed successfully|exited with code \d+)$/.test(reply)) {
-    // Fall back to tail of logs if resultSummary is uninformative
     reply = allContent.slice(-4000).trim();
   }
   if (jsonMatch) reply = reply.replace(jsonMatch, "").trim();
-  if (!reply) reply = parsed?.summary ?? "(no reply)";
+  if (!reply) reply = (parsed?.summary as string) ?? "(no reply)";
 
-  await db.insert(reviewChatMessages).values({
-    draftId: draft.id,
+  await db.insert(prReviewChatMessages).values({
+    prReviewId: review.id,
+    runId,
     role: "assistant",
     content: reply,
   });
 
-  // If the agent emitted a fresh JSON block, it's signalling a draft update.
   if (parsed) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (parsed.verdict && ["approve", "request_changes", "comment"].includes(parsed.verdict)) {
+    if (
+      typeof parsed.verdict === "string" &&
+      ["approve", "request_changes", "comment"].includes(parsed.verdict)
+    ) {
       updates.verdict = parsed.verdict;
     }
-    if (parsed.summary) updates.summary = parsed.summary;
+    if (typeof parsed.summary === "string") updates.summary = parsed.summary;
     if (Array.isArray(parsed.fileComments)) updates.fileComments = parsed.fileComments;
     if (Object.keys(updates).length > 1) {
-      await db.update(reviewDrafts).set(updates).where(eq(reviewDrafts.id, draft.id));
+      await db.update(prReviews).set(updates).where(eq(prReviews.id, review.id));
     }
   }
 
-  logger.info({ taskId, draftId: draft.id, hasStructuredOutput: !!parsed }, "Chat reply appended");
+  logger.info(
+    { runId, prReviewId: review.id, hasStructuredOutput: !!parsed },
+    "Chat reply appended",
+  );
+}
+
+// ── Cancel / intent ────────────────────────────────────────────────────────
+
+export async function setControlIntent(id: string, intent: "cancel" | "rereview"): Promise<void> {
+  await db
+    .update(prReviews)
+    .set({ controlIntent: intent, updatedAt: new Date() })
+    .where(eq(prReviews.id, id));
+  await enqueueReconcile({ kind: "pr-review", id }, { reason: `intent:${intent}` }).catch(() => {});
+}
+
+// ── Helpers used by poller / pr-watcher / tasks filter ─────────────────────
+
+/**
+ * Check whether a PR is the product of an optio coding task. Used by the
+ * poller to skip auto-reviewing Optio-authored PRs (to avoid infinite
+ * loops).
+ */
+export async function isOptioAuthoredPr(prUrl: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(eq(tasks.prUrl, prUrl))
+    .limit(1);
+  return !!row;
+}
+
+export async function listReviewsByPrUrls(prUrls: string[]): Promise<PrReview[]> {
+  if (prUrls.length === 0) return [];
+  return db.select().from(prReviews).where(inArray(prReviews.prUrl, prUrls));
 }

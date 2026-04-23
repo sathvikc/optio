@@ -32,7 +32,6 @@ vi.mock("../db/schema.js", () => ({
   taskLogs: { taskId: "taskId", timestamp: "timestamp", logType: "logType", content: "content" },
   users: { id: "id", displayName: "display_name", avatarUrl: "avatar_url" },
   repos: { repoUrl: "repoUrl" },
-  reviewDrafts: { taskId: "taskId" },
 }));
 
 vi.mock("./event-bus.js", () => ({ publishEvent: vi.fn() }));

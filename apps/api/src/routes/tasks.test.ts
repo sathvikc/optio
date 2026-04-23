@@ -515,6 +515,7 @@ describe("GET /api/tasks/:id/logs", () => {
         logType: "text",
         metadata: null,
         workflowRunId: null,
+        prReviewRunId: null,
         timestamp: new Date("2026-04-11T12:00:00Z"),
       },
     ]);

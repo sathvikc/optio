@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   tasks,
@@ -8,10 +8,15 @@ import {
   repos,
   taskEvents,
   workflowPods,
+  prReviews,
+  prReviewRuns,
+  prReviewEvents,
 } from "../db/schema.js";
 import {
   TaskState,
   WorkflowRunState,
+  PrReviewState,
+  PrReviewRunState,
   DEFAULT_STALL_THRESHOLD_MS,
   getOffPeakInfo,
   parseIntEnv,
@@ -29,6 +34,10 @@ import type {
   RepoRunStatus,
   StandaloneRunSpec,
   StandaloneRunStatus,
+  PrReviewRunSpec,
+  PrReviewRunStatus,
+  PrReviewControlIntent,
+  PrReviewRunKind,
 } from "@optio/shared";
 import { getGitPlatformForRepo } from "./git-token-service.js";
 import { determineCheckStatus, determineReviewStatus } from "../workers/pr-watcher-worker.js";
@@ -43,9 +52,8 @@ import { logger } from "../logger.js";
  * decision function can choose to defer rather than act on stale truth.
  */
 export async function buildWorldSnapshot(ref: RunRef): Promise<WorldSnapshot | null> {
-  if (ref.kind === "repo") {
-    return buildRepoSnapshot(ref);
-  }
+  if (ref.kind === "repo") return buildRepoSnapshot(ref);
+  if (ref.kind === "pr-review") return buildPrReviewSnapshot(ref);
   return buildStandaloneSnapshot(ref);
 }
 
@@ -184,7 +192,7 @@ function loadRepoRun(row: typeof tasks.$inferSelect, ref: RunRef): Run {
     agentType: row.agentType,
     prompt: row.prompt,
     title: row.title,
-    taskType: (row.taskType as "coding" | "review" | "pr_review") ?? "coding",
+    taskType: (row.taskType as "coding" | "review") ?? "coding",
     maxRetries: row.maxRetries,
     priority: row.priority,
     ignoreOffPeak: row.ignoreOffPeak,
@@ -309,6 +317,7 @@ async function loadPrStatus(run: Run, userId: string | null): Promise<PrStatus |
     checksStatus,
     reviewStatus: reviewResult.status as PrStatus["reviewStatus"],
     latestReviewComments: reviewResult.comments || null,
+    headSha: prData.headSha ?? null,
   };
 }
 
@@ -435,6 +444,9 @@ async function buildStandaloneSnapshot(ref: RunRef): Promise<WorldSnapshot | nul
   const stallThresholdMs = parseIntEnv("OPTIO_STALL_THRESHOLD_MS", DEFAULT_STALL_THRESHOLD_MS);
   // workflow_runs doesn't have lastActivityAt — use startedAt for
   // coarse stall detection until a richer signal exists.
+  if (run.kind !== "standalone") {
+    throw new Error("expected standalone run for standalone snapshot");
+  }
   const heartbeat = computeHeartbeat(
     run.status.startedAt,
     run.status.state === WorkflowRunState.RUNNING,
@@ -554,4 +566,173 @@ function computeHeartbeat(
     isStale: silentForMs >= thresholdMs,
     silentForMs,
   };
+}
+
+// ── PR Review snapshot ──────────────────────────────────────────────────────
+
+async function buildPrReviewSnapshot(ref: RunRef): Promise<WorldSnapshot | null> {
+  const readErrors: WorldReadError[] = [];
+  const now = new Date();
+
+  const [row] = await db.select().from(prReviews).where(eq(prReviews.id, ref.id));
+  if (!row) return null;
+
+  const repoConfig = await loadRepoSettings(row.repoUrl, row.workspaceId ?? null);
+  const maxAutoRereviews = repoConfig?.maxAutoResumes ?? parseIntEnv("OPTIO_MAX_AUTO_RESUMES", 10);
+
+  const run: Run = {
+    kind: "pr-review",
+    ref,
+    spec: buildPrReviewSpec(row, {
+      autoSubmitOnReady: false, // read below
+      maxAutoRereviews,
+    }),
+    status: await buildPrReviewStatus(row),
+  };
+
+  // Auto-submit is encoded in repos.externalReviewMode === 'on_pr_post'.
+  const repoRowFull = await db.select().from(repos).where(eq(repos.repoUrl, row.repoUrl)).limit(1);
+  const autoSubmitOnReady = repoRowFull[0]?.externalReviewMode === "on_pr_post";
+  const specWithAuto: PrReviewRunSpec = {
+    ...(run.spec as PrReviewRunSpec),
+    autoSubmitOnReady,
+  };
+  const runWithAuto: Run = { ...run, spec: specWithAuto } as Run;
+
+  const [prResult, recentAutoRereviewCount] = await Promise.all([
+    loadPrStatusForReview(row).catch((err) => {
+      readErrors.push({ source: "pr", message: String(err) });
+      return null;
+    }),
+    countRecentAutoRereviews(row.id).catch(() => 0),
+  ]);
+
+  const stallThresholdMs = parseIntEnv("OPTIO_STALL_THRESHOLD_MS", DEFAULT_STALL_THRESHOLD_MS);
+
+  const snapshot: WorldSnapshot = {
+    now,
+    run: runWithAuto,
+    pod: null,
+    pr: prResult,
+    dependencies: [],
+    blockingSubtasks: [],
+    capacity: {
+      global: { running: 0, max: parseIntEnv("OPTIO_PR_REVIEW_CONCURRENCY", 4) },
+    },
+    heartbeat: { lastActivityAt: null, isStale: false, silentForMs: 0 },
+    settings: {
+      stallThresholdMs,
+      autoMerge: false,
+      cautiousMode: false,
+      autoResume: false,
+      reviewEnabled: true,
+      reviewTrigger: null,
+      offPeakOnly: false,
+      offPeakActive: false,
+      hasReviewSubtask: false,
+      maxAutoResumes: maxAutoRereviews,
+      recentAutoResumeCount: recentAutoRereviewCount,
+    },
+    readErrors,
+  };
+
+  return Object.freeze(snapshot);
+}
+
+function buildPrReviewSpec(
+  row: typeof prReviews.$inferSelect,
+  extras: { autoSubmitOnReady: boolean; maxAutoRereviews: number },
+): PrReviewRunSpec {
+  return {
+    prUrl: row.prUrl,
+    prNumber: row.prNumber,
+    repoOwner: row.repoOwner,
+    repoName: row.repoName,
+    repoUrl: row.repoUrl,
+    workspaceId: row.workspaceId ?? null,
+    origin: (row.origin as PrReviewRunSpec["origin"]) ?? "manual",
+    userEngaged: row.userEngaged,
+    autoSubmitted: row.autoSubmitted,
+    headSha: row.headSha,
+    autoSubmitOnReady: extras.autoSubmitOnReady,
+    maxAutoRereviews: extras.maxAutoRereviews,
+  };
+}
+
+async function buildPrReviewStatus(row: typeof prReviews.$inferSelect): Promise<PrReviewRunStatus> {
+  const [latestRun] = await db
+    .select()
+    .from(prReviewRuns)
+    .where(eq(prReviewRuns.prReviewId, row.id))
+    .orderBy(desc(prReviewRuns.createdAt))
+    .limit(1);
+
+  return {
+    state: row.state as PrReviewState,
+    verdict: (row.verdict as PrReviewRunStatus["verdict"]) ?? null,
+    summary: row.summary ?? null,
+    fileComments: (row.fileComments as PrReviewRunStatus["fileComments"]) ?? null,
+    submittedAt: row.submittedAt ?? null,
+    errorMessage: row.errorMessage ?? null,
+    controlIntent:
+      row.controlIntent === "cancel" || row.controlIntent === "rereview"
+        ? (row.controlIntent as PrReviewControlIntent)
+        : null,
+    latestRunKind: (latestRun?.kind as PrReviewRunKind) ?? null,
+    latestRunState: (latestRun?.state as PrReviewRunState) ?? null,
+    // Seeded downstream via settings.recentAutoResumeCount.
+    recentAutoRereviewCount: 0,
+    reconcileBackoffUntil: row.reconcileBackoffUntil ?? null,
+    reconcileAttempts: row.reconcileAttempts ?? 0,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function loadPrStatusForReview(row: typeof prReviews.$inferSelect): Promise<PrStatus | null> {
+  const parsed = parsePrUrl(row.prUrl);
+  if (!parsed) return null;
+  const platformResult = await getGitPlatformForRepo(row.repoUrl, { server: true }).catch(
+    () => null,
+  );
+  if (!platformResult) return null;
+  const { platform, ri } = platformResult;
+
+  const prData = await platform.getPullRequest(ri, parsed.prNumber).catch(() => null);
+  if (!prData) return null;
+
+  const [checkRuns, reviews] = await Promise.all([
+    platform.getCIChecks(ri, prData.headSha).catch(() => []),
+    platform.getReviews(ri, parsed.prNumber).catch(() => []),
+  ]);
+  const checksStatus = determineCheckStatus(checkRuns);
+  const reviewResult = determineReviewStatus(reviews);
+
+  return {
+    url: row.prUrl,
+    number: parsed.prNumber,
+    state: (prData.merged ? "merged" : prData.state) as PrStatus["state"],
+    merged: !!prData.merged,
+    mergeable: prData.mergeable ?? null,
+    checksStatus,
+    reviewStatus: reviewResult.status as PrStatus["reviewStatus"],
+    latestReviewComments: reviewResult.comments || null,
+    headSha: prData.headSha ?? null,
+  };
+}
+
+async function countRecentAutoRereviews(prReviewId: string): Promise<number> {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(prReviewEvents)
+    .where(
+      sql`${prReviewEvents.prReviewId} = ${prReviewId}
+        AND ${prReviewEvents.trigger} LIKE 'auto_rereview_%'
+        AND ${prReviewEvents.createdAt} > COALESCE(
+          (SELECT MAX(e2.created_at) FROM pr_review_events e2
+           WHERE e2.pr_review_id = ${prReviewId}
+           AND e2.trigger IN ('user_rereview', 'user_submit', 'user_relaunch', 'user_cancel')),
+          '1970-01-01'::timestamptz
+        )`,
+    );
+  return Number(count);
 }

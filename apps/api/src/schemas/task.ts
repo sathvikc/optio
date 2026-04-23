@@ -168,7 +168,8 @@ export const TaskEventSchema = z
 export const LogEntrySchema = z
   .object({
     id: z.string(),
-    taskId: z.string(),
+    // Nullable: may belong to a task, a workflow run, or a pr_review_run.
+    taskId: z.string().nullable(),
     stream: z.string().describe("stdout | stderr"),
     content: z.string(),
     logType: z
@@ -179,6 +180,7 @@ export const LogEntrySchema = z
       ),
     metadata: z.record(z.unknown()).nullable(),
     workflowRunId: z.string().nullable(),
+    prReviewRunId: z.string().nullable(),
     timestamp: z.date(),
   })
   .describe("Task log entry emitted by the agent");

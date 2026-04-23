@@ -1,9 +1,18 @@
 import { TaskState } from "../types/task.js";
 import { WorkflowRunState } from "../types/workflow.js";
+import {
+  PrReviewState,
+  PrReviewRunState,
+  PrReviewRunKind,
+  PrReviewVerdict,
+  PrReviewOrigin,
+  PrReviewControlIntent,
+  PrReviewFileComment,
+} from "../types/pr-review.js";
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
-export type RunKind = "repo" | "standalone";
+export type RunKind = "repo" | "standalone" | "pr-review";
 
 export interface RunRef {
   kind: RunKind;
@@ -29,16 +38,13 @@ export interface RepoRunSpec {
   prompt: string;
   title: string;
   /**
-   * "coding" — agent opens a PR; full PR-reactive state machine applies
-   *   (auto-merge, auto-resume on CI fail, review triggers).
+   * "coding" — agent opens a PR; full PR-reactive state machine applies.
    * "review" — internal review subtask of a coding task; no PR of its own.
-   * "pr_review" — external PR review; references a PR via `review_drafts`,
-   *   not `tasks.prUrl`. Reconciler treats this as non-PR-reactive.
    *
-   * Only "coding" tasks drive PR-reactive behavior. New task types default
-   * to non-reactive unless explicitly opted into the coding branch.
+   * External PR reviews used to be a third value here ("pr_review") but
+   * they now live in the `pr_reviews` table with their own reconciler.
    */
-  taskType: "coding" | "review" | "pr_review";
+  taskType: "coding" | "review";
   maxRetries: number;
   priority: number;
   ignoreOffPeak: boolean;
@@ -98,6 +104,47 @@ export interface StandaloneRunStatus {
   updatedAt: Date;
 }
 
+// ── PR Review run types ─────────────────────────────────────────────────────
+//
+// A PR review's primary record lives in `pr_reviews`. The reconciler treats
+// that row (not the individual `pr_review_runs` rows) as the run for
+// scheduling purposes — runs are output actions, not inputs.
+
+export interface PrReviewRunSpec {
+  prUrl: string;
+  prNumber: number;
+  repoOwner: string;
+  repoName: string;
+  repoUrl: string;
+  workspaceId: string | null;
+  origin: PrReviewOrigin;
+  userEngaged: boolean;
+  autoSubmitted: boolean;
+  headSha: string;
+  /** Does the owning user want auto-submit on first ready draft? */
+  autoSubmitOnReady: boolean;
+  /** Cap on auto-rereviews before we leave in stale. */
+  maxAutoRereviews: number;
+}
+
+export interface PrReviewRunStatus {
+  state: PrReviewState;
+  verdict: PrReviewVerdict | null;
+  summary: string | null;
+  fileComments: PrReviewFileComment[] | null;
+  submittedAt: Date | null;
+  errorMessage: string | null;
+  controlIntent: PrReviewControlIntent | null;
+  /** Latest active/completed run's kind, for decision context. */
+  latestRunKind: PrReviewRunKind | null;
+  latestRunState: PrReviewRunState | null;
+  /** Count of auto_rereview_* events since the last manual action. */
+  recentAutoRereviewCount: number;
+  reconcileBackoffUntil: Date | null;
+  reconcileAttempts: number;
+  updatedAt: Date;
+}
+
 export type Run =
   | { kind: "repo"; ref: RunRef; spec: RepoRunSpec; status: RepoRunStatus }
   | {
@@ -105,6 +152,12 @@ export type Run =
       ref: RunRef;
       spec: StandaloneRunSpec;
       status: StandaloneRunStatus;
+    }
+  | {
+      kind: "pr-review";
+      ref: RunRef;
+      spec: PrReviewRunSpec;
+      status: PrReviewRunStatus;
     };
 
 // ── World observations ──────────────────────────────────────────────────────
@@ -124,6 +177,8 @@ export interface PrStatus {
   checksStatus: "none" | "pending" | "passing" | "failing";
   reviewStatus: "none" | "pending" | "approved" | "changes_requested";
   latestReviewComments: string | null;
+  /** Head SHA of the PR. Used by pr-review reconciler for stale detection. */
+  headSha: string | null;
 }
 
 export interface DependencyObservation {
@@ -232,6 +287,44 @@ export type StandaloneEnqueueAgent = {
   trigger: string;
 } & ActionBase;
 
+// ── PR Review actions ───────────────────────────────────────────────────────
+
+export type PrReviewTransition = {
+  kind: "transition";
+  to: PrReviewState;
+  statusPatch?: Partial<PrReviewRunStatus>;
+  clearControlIntent?: boolean;
+  trigger: string;
+} & ActionBase;
+
+export type PrReviewPatchStatus = {
+  kind: "patchStatus";
+  statusPatch: Partial<PrReviewRunStatus>;
+} & ActionBase;
+
+export type PrReviewLaunchRun = {
+  kind: "launchReviewRun";
+  runKind: PrReviewRunKind;
+  trigger: string;
+  /** Optional resume-session plumbing for chat turns. */
+  resumeSessionId?: string;
+  prompt?: string;
+} & ActionBase;
+
+export type PrReviewSubmit = { kind: "submitReview"; trigger: string } & ActionBase;
+export type PrReviewMarkStale = { kind: "markStale" } & ActionBase;
+
+export type PrReviewAction =
+  | CommonNoop
+  | CommonRequeue
+  | CommonDefer
+  | CommonClearIntent
+  | PrReviewTransition
+  | PrReviewPatchStatus
+  | PrReviewLaunchRun
+  | PrReviewSubmit
+  | PrReviewMarkStale;
+
 export type RepoAction =
   | CommonNoop
   | CommonRequeue
@@ -252,7 +345,7 @@ export type StandaloneAction =
   | StandaloneTransition
   | StandaloneEnqueueAgent;
 
-export type Action = RepoAction | StandaloneAction;
+export type Action = RepoAction | StandaloneAction | PrReviewAction;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -262,6 +355,10 @@ export function isTerminalRepoState(state: TaskState): boolean {
 
 export function isTerminalStandaloneState(state: WorkflowRunState): boolean {
   return state === WorkflowRunState.COMPLETED;
+}
+
+export function isTerminalPrReviewState(state: PrReviewState): boolean {
+  return state === PrReviewState.CANCELLED;
 }
 
 export const NON_TERMINAL_REPO_STATES: TaskState[] = [
@@ -281,3 +378,15 @@ export const NON_TERMINAL_STANDALONE_STATES: WorkflowRunState[] = [
   WorkflowRunState.RUNNING,
   WorkflowRunState.FAILED,
 ];
+
+// Re-export PR review types for convenience so consumers can do
+// `import { PrReviewState, ... } from "@optio/shared"`.
+export {
+  PrReviewState,
+  PrReviewRunState,
+  type PrReviewRunKind,
+  type PrReviewVerdict,
+  type PrReviewOrigin,
+  type PrReviewControlIntent,
+  type PrReviewFileComment,
+};

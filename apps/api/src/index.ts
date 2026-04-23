@@ -60,6 +60,7 @@ async function main() {
   const { startRepoCleanupWorker } = await import("./workers/repo-cleanup-worker.js");
   const { startPrWatcherWorker } = await import("./workers/pr-watcher-worker.js");
   const { startExternalPrReviewWorker } = await import("./workers/external-pr-review-worker.js");
+  const { startPrReviewWorker } = await import("./workers/pr-review-worker.js");
   const { startWebhookWorker } = await import("./workers/webhook-worker.js");
   const { startWorkflowWorker } = await import("./workers/workflow-worker.js");
   const { startWorkflowTriggerWorker } = await import("./workers/workflow-trigger-worker.js");
@@ -212,6 +213,9 @@ async function main() {
   const externalPrReviewWorker = startExternalPrReviewWorker();
   logger.info("External PR review worker started");
 
+  const prReviewWorker = startPrReviewWorker();
+  logger.info("PR review run worker started");
+
   const webhookWorker = startWebhookWorker();
   logger.info("Webhook worker started");
 
@@ -245,6 +249,7 @@ async function main() {
     await repoCleanupWorker.close();
     await prWatcherWorker.close();
     await externalPrReviewWorker.close();
+    await prReviewWorker.close();
     await webhookWorker.close();
     await workflowWorker.close();
     await workflowTriggerWorker.close();

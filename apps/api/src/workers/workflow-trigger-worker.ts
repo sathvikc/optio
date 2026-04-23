@@ -149,6 +149,28 @@ async function dispatchTrigger(trigger: {
     return;
   }
 
+  if (trigger.targetType === "pr_review") {
+    // Target id is a pr_reviews.id — fire a rereview.
+    const { reReview } = await import("../services/pr-review-service.js");
+    try {
+      const result = await reReview(trigger.targetId);
+      logger.info(
+        {
+          triggerId: trigger.id,
+          prReviewId: result.review.id,
+          runId: result.run.id,
+        },
+        "PR review schedule trigger fired",
+      );
+    } catch (err) {
+      logger.warn(
+        { err, triggerId: trigger.id, prReviewId: trigger.targetId },
+        "PR review schedule trigger failed",
+      );
+    }
+    return;
+  }
+
   logger.warn(
     { triggerId: trigger.id, targetType: trigger.targetType },
     "Unknown trigger target_type, skipping",

@@ -121,7 +121,7 @@ export const tasks = pgTable(
     maxRetries: integer("max_retries").notNull().default(3),
     priority: integer("priority").notNull().default(100), // lower = higher priority
     parentTaskId: uuid("parent_task_id"), // for review tasks linked to a coding task
-    taskType: text("task_type").notNull().default("coding"), // "coding" | "review"
+    taskType: text("task_type").notNull().default("coding"), // "coding" | "review" (subtask-only)
     subtaskOrder: integer("subtask_order").default(0), // ordering within parent's subtasks
     blocksParent: boolean("blocks_parent").notNull().default(false), // if true, parent waits for this
     worktreeState: text("worktree_state"), // "active" | "dirty" | "reset" | "preserved" | "removed"
@@ -175,19 +175,20 @@ export const taskLogs = pgTable(
   "task_logs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    taskId: uuid("task_id")
-      .notNull()
-      .references(() => tasks.id),
+    // Nullable: logs may belong to a task, a workflow run, or a pr_review_run.
+    taskId: uuid("task_id").references(() => tasks.id, { onDelete: "cascade" }),
     stream: text("stream").notNull().default("stdout"),
     content: text("content").notNull(),
     logType: text("log_type"), // "text" | "tool_use" | "tool_result" | "thinking" | "system" | "error" | "info"
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     workflowRunId: uuid("workflow_run_id"), // nullable FK to workflow_runs for aggregating logs across a run
+    prReviewRunId: uuid("pr_review_run_id"), // nullable FK to pr_review_runs
     timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("task_logs_task_id_timestamp_idx").on(table.taskId, table.timestamp),
     index("task_logs_workflow_run_id_idx").on(table.workflowRunId),
+    index("task_logs_pr_review_run_id_idx").on(table.prReviewRunId, table.timestamp),
   ],
 );
 
@@ -887,27 +888,40 @@ export const optioActions = pgTable(
   ],
 );
 
-// ── Review Drafts (PR Review Assistant) ─────────────────────────────────────
+// ── PR Reviews (first-class primitive) ──────────────────────────────────────
+//
+// External PR reviews are a sibling of Repo Tasks (`tasks`) and Standalone
+// Tasks (`workflows`) — they have their own state machine, their own
+// execution runs, their own reconciler, and their own UI at `/reviews`.
+//
+// `pr_reviews`         canonical review record (one per PR being reviewed)
+// `pr_review_runs`     each agent execution: initial, rereview, chat turn
+// `pr_review_events`   transition log
+// `pr_review_chat_messages`  user ↔ agent conversation after initial review
 
-export const reviewDraftStateEnum = pgEnum("review_draft_state", [
+export const prReviewStateEnum = pgEnum("pr_review_state", [
+  "queued",
   "waiting_ci",
-  "drafting",
+  "reviewing",
   "ready",
-  "submitted",
   "stale",
+  "submitted",
+  "cancelled",
+  "failed",
 ]);
 
-export const reviewDrafts = pgTable(
-  "review_drafts",
+export const prReviews = pgTable(
+  "pr_reviews",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    taskId: uuid("task_id").references(() => tasks.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id"),
     prUrl: text("pr_url").notNull(),
     prNumber: integer("pr_number").notNull(),
     repoOwner: text("repo_owner").notNull(),
     repoName: text("repo_name").notNull(),
+    repoUrl: text("repo_url").notNull(),
     headSha: text("head_sha").notNull(),
-    state: reviewDraftStateEnum("state").notNull().default("drafting"),
+    state: prReviewStateEnum("state").notNull().default("queued"),
     verdict: text("verdict"), // "approve" | "request_changes" | "comment"
     summary: text("summary"),
     fileComments:
@@ -918,29 +932,105 @@ export const reviewDrafts = pgTable(
     userEngaged: boolean("user_engaged").notNull().default(false),
     autoSubmitted: boolean("auto_submitted").notNull().default(false),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    errorMessage: text("error_message"),
+    createdBy: uuid("created_by"),
+    // Control plane — same shape as tasks/workflow_runs.
+    controlIntent: text("control_intent"), // "cancel" | "rereview" | null
+    reconcileBackoffUntil: timestamp("reconcile_backoff_until", { withTimezone: true }),
+    reconcileAttempts: integer("reconcile_attempts").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    index("review_drafts_task_id_idx").on(table.taskId),
-    index("review_drafts_state_idx").on(table.state),
+    index("pr_reviews_workspace_idx").on(table.workspaceId),
+    index("pr_reviews_state_idx").on(table.state),
+    index("pr_reviews_pr_url_idx").on(table.prUrl),
+    index("pr_reviews_repo_url_idx").on(table.repoUrl),
+    index("pr_reviews_updated_idx").on(table.updatedAt.desc()),
   ],
 );
 
-export const reviewChatMessageRoleEnum = pgEnum("review_chat_message_role", ["user", "assistant"]);
+export const prReviewRunStateEnum = pgEnum("pr_review_run_state", [
+  "queued",
+  "provisioning",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+]);
 
-export const reviewChatMessages = pgTable(
-  "review_chat_messages",
+export const prReviewRuns = pgTable(
+  "pr_review_runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    draftId: uuid("draft_id")
+    prReviewId: uuid("pr_review_id")
       .notNull()
-      .references(() => reviewDrafts.id, { onDelete: "cascade" }),
-    role: reviewChatMessageRoleEnum("role").notNull(),
+      .references(() => prReviews.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull().default("initial"), // "initial" | "rereview" | "chat"
+    state: prReviewRunStateEnum("state").notNull().default("queued"),
+    prompt: text("prompt"),
+    sessionId: text("session_id"),
+    resumeSessionId: text("resume_session_id"),
+    containerId: text("container_id"),
+    podId: uuid("pod_id"),
+    lastPodId: uuid("last_pod_id"),
+    worktreeState: text("worktree_state"),
+    resultSummary: text("result_summary"),
+    errorMessage: text("error_message"),
+    costUsd: text("cost_usd"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    modelUsed: text("model_used"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("pr_review_runs_review_idx").on(table.prReviewId),
+    index("pr_review_runs_state_idx").on(table.state),
+    index("pr_review_runs_created_idx").on(table.createdAt.desc()),
+  ],
+);
+
+export const prReviewEvents = pgTable(
+  "pr_review_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    prReviewId: uuid("pr_review_id")
+      .notNull()
+      .references(() => prReviews.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").references(() => prReviewRuns.id, { onDelete: "set null" }),
+    fromState: prReviewStateEnum("from_state"),
+    toState: prReviewStateEnum("to_state").notNull(),
+    trigger: text("trigger").notNull(),
+    message: text("message"),
+    userId: uuid("user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("pr_review_events_review_idx").on(table.prReviewId),
+    index("pr_review_events_created_idx").on(table.createdAt.desc()),
+  ],
+);
+
+export const prReviewChatRoleEnum = pgEnum("pr_review_chat_role", ["user", "assistant"]);
+
+export const prReviewChatMessages = pgTable(
+  "pr_review_chat_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    prReviewId: uuid("pr_review_id")
+      .notNull()
+      .references(() => prReviews.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").references(() => prReviewRuns.id, { onDelete: "set null" }),
+    role: prReviewChatRoleEnum("role").notNull(),
     content: text("content").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index("review_chat_messages_draft_id_idx").on(table.draftId)],
+  (table) => [index("pr_review_chat_messages_review_idx").on(table.prReviewId, table.createdAt)],
 );
 
 // ── Push Subscriptions (Web Push API) ────────────────────────────────────────

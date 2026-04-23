@@ -1,7 +1,7 @@
 import { Queue, Worker } from "bullmq";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { tasks, sessionPrs, interactiveSessions, reviewDrafts } from "../db/schema.js";
+import { tasks, sessionPrs, interactiveSessions, prReviews } from "../db/schema.js";
 import type { GitPlatform, RepoIdentifier } from "@optio/shared";
 import { parsePrUrl, parseIntEnv } from "@optio/shared";
 import { getGitPlatformForRepo } from "../services/git-token-service.js";
@@ -226,18 +226,16 @@ export function startPrWatcherWorker() {
         logger.warn({ err }, "Failed to run session PR watcher");
       }
 
-      // --- Review draft staleness detection ---
-      // Check if any ready review drafts have become stale (new commits pushed to PR)
+      // --- PR Review staleness detection ---
+      // When a ready review's PR gets new commits, mark stale so the UI
+      // can prompt a rereview. The reconciler handles auto-rereview for
+      // origin='auto' reviews; this watcher just surfaces the signal.
       try {
-        const readyDrafts = await db
-          .select()
-          .from(reviewDrafts)
-          .where(eq(reviewDrafts.state, "ready"));
+        const readyReviews = await db.select().from(prReviews).where(eq(prReviews.state, "ready"));
 
-        for (const draft of readyDrafts) {
+        for (const review of readyReviews) {
           try {
-            const draftPrUrl = draft.prUrl;
-            const draftParsed = draftPrUrl ? parsePrUrl(draftPrUrl) : null;
+            const draftParsed = parsePrUrl(review.prUrl);
             if (!draftParsed) continue;
 
             const draftRepoUrl = `https://${draftParsed.host}/${draftParsed.owner}/${draftParsed.repo}`;
@@ -246,29 +244,28 @@ export function startPrWatcherWorker() {
             const { platform: draftPlatform, ri: draftRi } = draftResult;
 
             const prData = await draftPlatform
-              .getPullRequest(draftRi, draft.prNumber)
+              .getPullRequest(draftRi, review.prNumber)
               .catch(() => null);
             if (!prData) continue;
 
-            if (prData.headSha && prData.headSha !== draft.headSha) {
-              const { markDraftStale } = await import("../services/pr-review-service.js");
-              await markDraftStale(draft.id);
+            if (prData.headSha && prData.headSha !== review.headSha) {
+              const { markStale } = await import("../services/pr-review-service.js");
+              await markStale(review.id);
               logger.info(
                 {
-                  draftId: draft.id,
-                  taskId: draft.taskId,
-                  oldSha: draft.headSha,
+                  prReviewId: review.id,
+                  oldSha: review.headSha,
                   newSha: prData.headSha,
                 },
-                "Review draft marked stale — PR has new commits",
+                "PR review marked stale — PR has new commits",
               );
             }
           } catch (err) {
-            logger.warn({ err, draftId: draft.id }, "Failed to check draft staleness");
+            logger.warn({ err, prReviewId: review.id }, "Failed to check review staleness");
           }
         }
       } catch (err) {
-        logger.warn({ err }, "Failed to run review draft staleness check");
+        logger.warn({ err }, "Failed to run PR review staleness check");
       }
 
       recordPrWatchCycleDuration((Date.now() - cycleStart) / 1000);

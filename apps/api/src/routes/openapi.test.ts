@@ -234,13 +234,13 @@ const MIGRATED_ROUTES: MigratedRoute[] = [
   { method: "post", path: "/api/sessions/{id}/end" },
   { method: "get", path: "/api/sessions/{id}/prs" },
   { method: "post", path: "/api/sessions/{id}/prs" },
-  // pr-reviews.ts (8)
+  // pr-reviews.ts
   { method: "get", path: "/api/pull-requests" },
-  { method: "post", path: "/api/pull-requests/review" },
-  { method: "get", path: "/api/tasks/{id}/review-draft" },
-  { method: "patch", path: "/api/tasks/{id}/review-draft" },
-  { method: "post", path: "/api/tasks/{id}/review-draft/submit" },
-  { method: "post", path: "/api/tasks/{id}/review-draft/re-review" },
+  { method: "post", path: "/api/pr-reviews" },
+  { method: "get", path: "/api/pr-reviews/{id}" },
+  { method: "patch", path: "/api/pr-reviews/{id}" },
+  { method: "post", path: "/api/pr-reviews/{id}/submit" },
+  { method: "post", path: "/api/pr-reviews/{id}/re-review" },
   { method: "post", path: "/api/pull-requests/merge" },
   { method: "get", path: "/api/pull-requests/status" },
   // issues.ts (2)

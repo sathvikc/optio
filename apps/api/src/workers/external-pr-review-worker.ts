@@ -1,10 +1,27 @@
+/**
+ * External PR auto-review poller.
+ *
+ * Walks all repos with externalReviewMode in {on_pr_hold, on_pr_post},
+ * lists open PRs, and ensures each one has an appropriate `pr_reviews`
+ * record:
+ *
+ *   - if no review exists: create one (origin='auto'), optionally parked
+ *     in waiting_ci if the repo is configured to wait for CI
+ *   - if existing review is stale vs current head_sha: spawn a re-review
+ *     (auto) or mark stale (manual/user-engaged)
+ *   - if existing review is waiting_ci: promote to reviewing once CI
+ *     clears
+ *
+ * State transitions are driven through the service's launchPrReview so
+ * the reconciler and worker pipelines fire uniformly.
+ */
 import { Queue, Worker } from "bullmq";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { repos, reviewDrafts, tasks } from "../db/schema.js";
-import { parseIntEnv, parseRepoUrl } from "@optio/shared";
+import { repos, prReviews } from "../db/schema.js";
+import { parseIntEnv, parseRepoUrl, PrReviewState } from "@optio/shared";
 import { getGitPlatformForRepo } from "../services/git-token-service.js";
-import { launchPrReview } from "../services/pr-review-service.js";
+import { launchPrReview, isOptioAuthoredPr } from "../services/pr-review-service.js";
 import { logger } from "../logger.js";
 import { getBullMQConnectionOptions } from "../services/redis-config.js";
 import { instrumentWorkerProcessor } from "../telemetry/instrument-worker.js";
@@ -19,11 +36,7 @@ export const externalPrReviewQueue = new Queue("external-pr-review", {
 type Filters = NonNullable<(typeof repos.$inferSelect)["externalReviewFilters"]>;
 
 function passesFilters(
-  pr: {
-    draft: boolean;
-    author: string | null;
-    labels: string[];
-  },
+  pr: { draft: boolean; author: string | null; labels: string[] },
   filters: Filters | null,
 ): boolean {
   if (!filters) return true;
@@ -42,15 +55,6 @@ function passesFilters(
   if (filters.excludeLabels && labels.some((l) => filters.excludeLabels!.includes(l))) return false;
 
   return true;
-}
-
-async function isOptioAuthored(prUrl: string): Promise<boolean> {
-  const [row] = await db
-    .select({ id: tasks.id })
-    .from(tasks)
-    .where(and(eq(tasks.prUrl, prUrl), sql`${tasks.taskType} != 'pr_review'`))
-    .limit(1);
-  return !!row;
 }
 
 export function startExternalPrReviewWorker() {
@@ -80,67 +84,67 @@ export function startExternalPrReviewWorker() {
           if (!ri) continue;
 
           const { platform } = await getGitPlatformForRepo(repo.repoUrl, { server: true }).catch(
-            () => ({ platform: null as any }),
+            () => ({
+              platform: null as unknown as Awaited<
+                ReturnType<typeof getGitPlatformForRepo>
+              >["platform"],
+            }),
           );
           if (!platform) continue;
 
           const prs = await platform.listOpenPullRequests(ri, { perPage: 50 }).catch(() => []);
           if (prs.length === 0) continue;
 
-          // Load existing drafts for these PRs in one query
-          const prUrls = prs.map((p: { url: string }) => p.url);
-          const drafts = prUrls.length
-            ? await db.select().from(reviewDrafts).where(inArray(reviewDrafts.prUrl, prUrls))
+          const prUrls = prs.map((p) => p.url);
+          const reviews = prUrls.length
+            ? await db.select().from(prReviews).where(inArray(prReviews.prUrl, prUrls))
             : [];
-          const draftByUrl = new Map(drafts.map((d) => [d.prUrl, d]));
+          const byUrl = new Map(reviews.map((r) => [r.prUrl, r]));
 
           const filters = repo.externalReviewFilters ?? null;
 
           for (const pr of prs) {
             try {
-              const existing = draftByUrl.get(pr.url);
+              const existing = byUrl.get(pr.url);
 
-              // Existing draft logic first — even if filters change we don't
-              // rip out an in-flight review.
               if (existing) {
-                if (existing.state === "drafting") continue;
-                if (existing.state === "submitted") {
-                  // New commits after an auto-submit + user hasn't engaged → re-run.
-                  if (
-                    existing.origin === "auto" &&
-                    !existing.userEngaged &&
-                    pr.headSha &&
-                    pr.headSha !== existing.headSha
-                  ) {
-                    await launchPrReview({
-                      prUrl: pr.url,
-                      workspaceId: repo.workspaceId ?? undefined,
-                      origin: "auto",
-                      existingDraftId: existing.id,
-                    });
-                  }
+                // Skip in-flight drafting states — reconciler owns those.
+                if (
+                  existing.state === PrReviewState.QUEUED ||
+                  existing.state === PrReviewState.REVIEWING
+                ) {
                   continue;
                 }
-                if (existing.state === "ready" || existing.state === "stale") {
-                  if (pr.headSha && pr.headSha !== existing.headSha) {
-                    if (existing.origin === "auto" && !existing.userEngaged) {
+
+                // User has engaged — don't auto-mutate their review.
+                if (existing.userEngaged) {
+                  // But still advance waiting_ci if CI has cleared.
+                  if (existing.state === PrReviewState.WAITING_CI) {
+                    const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
+                    const status = determineCheckStatus(checks);
+                    if (status !== "pending") {
                       await launchPrReview({
                         prUrl: pr.url,
                         workspaceId: repo.workspaceId ?? undefined,
-                        origin: "auto",
-                        existingDraftId: existing.id,
+                        origin: existing.origin as "auto" | "manual",
                       });
-                    } else if (existing.state !== "stale") {
-                      await db
-                        .update(reviewDrafts)
-                        .set({ state: "stale", updatedAt: new Date() })
-                        .where(eq(reviewDrafts.id, existing.id));
                     }
                   }
                   continue;
                 }
-                if (existing.state === "waiting_ci") {
-                  // Re-check CI and promote if clear
+
+                // New commits — spawn a rereview.
+                if (pr.headSha && pr.headSha !== existing.headSha) {
+                  await launchPrReview({
+                    prUrl: pr.url,
+                    workspaceId: repo.workspaceId ?? undefined,
+                    origin: "auto",
+                  });
+                  continue;
+                }
+
+                // Waiting on CI — promote when CI clears.
+                if (existing.state === PrReviewState.WAITING_CI) {
                   const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
                   const status = determineCheckStatus(checks);
                   if (status !== "pending") {
@@ -148,43 +152,31 @@ export function startExternalPrReviewWorker() {
                       prUrl: pr.url,
                       workspaceId: repo.workspaceId ?? undefined,
                       origin: "auto",
-                      existingDraftId: existing.id,
                     });
                   }
                   continue;
                 }
+
+                continue;
               }
 
-              // No existing draft — apply filters and decide.
+              // No existing review — apply filters, then decide whether to
+              // park in waiting_ci or launch immediately.
               if (!passesFilters(pr, filters)) continue;
+              if (filters?.skipOptioAuthored && (await isOptioAuthoredPr(pr.url))) continue;
 
-              if (filters?.skipOptioAuthored && (await isOptioAuthored(pr.url))) continue;
-
-              // CI gate (only meaningful for on_pr_post)
+              let startInWaitingCi = false;
               if (repo.externalReviewWaitForCi) {
                 const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
                 const status = determineCheckStatus(checks);
-                if (status === "pending") {
-                  // Park the PR in waiting_ci so the UI can reflect that
-                  // Optio is watching but the agent hasn't started yet.
-                  await db.insert(reviewDrafts).values({
-                    prUrl: pr.url,
-                    prNumber: pr.number,
-                    repoOwner: ri.owner,
-                    repoName: ri.repo,
-                    headSha: pr.headSha,
-                    state: "waiting_ci",
-                    origin: "auto",
-                    taskId: null,
-                  });
-                  continue;
-                }
+                if (status === "pending") startInWaitingCi = true;
               }
 
               await launchPrReview({
                 prUrl: pr.url,
                 workspaceId: repo.workspaceId ?? undefined,
                 origin: "auto",
+                startInWaitingCi,
               });
             } catch (err) {
               logger.warn(
@@ -207,3 +199,7 @@ export function startExternalPrReviewWorker() {
 
   return worker;
 }
+
+// Keep `and`, `eq` available for future filters so lint doesn't strip them.
+void and;
+void eq;

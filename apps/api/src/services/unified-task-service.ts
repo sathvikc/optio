@@ -1,26 +1,37 @@
 /**
  * Unified Task service — the polymorphic /api/tasks HTTP layer routes through
- * here to dispatch to task-service, task-config-service, or workflow-service
- * based on which backing table owns the given id.
+ * here to dispatch to task-service, task-config-service, workflow-service,
+ * or pr-review-service based on which backing table owns the given id.
  *
  * The user-facing concept is one "Task" with the following internal shapes:
  *   - `repo-task`       → rows in `tasks`          (ad-hoc one-time Repo Task run)
  *   - `repo-blueprint`  → rows in `task_configs`   (reusable Repo Task blueprint)
  *   - `standalone`      → rows in `workflows`      (Standalone Task blueprint)
+ *   - `pr-review`       → rows in `pr_reviews`     (external PR review)
  *
  * Runs underneath each:
  *   - `repo-task`       → has no sub-runs (the row itself IS a run)
  *   - `repo-blueprint`  → spawned `tasks` rows (linked via metadata.taskConfigId)
  *   - `standalone`      → rows in `workflow_runs`
+ *   - `pr-review`       → rows in `pr_review_runs`
  */
 import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { tasks, taskConfigs, workflows, workflowRuns, workflowTriggers } from "../db/schema.js";
+import {
+  tasks,
+  taskConfigs,
+  workflows,
+  workflowRuns,
+  workflowTriggers,
+  prReviews,
+  prReviewRuns,
+} from "../db/schema.js";
 import * as taskService from "./task-service.js";
 import * as taskConfigService from "./task-config-service.js";
 import * as workflowService from "./workflow-service.js";
+import * as prReviewService from "./pr-review-service.js";
 
-export type UnifiedTaskType = "repo-task" | "repo-blueprint" | "standalone";
+export type UnifiedTaskType = "repo-task" | "repo-blueprint" | "standalone" | "pr-review";
 
 export interface ResolvedTask {
   type: UnifiedTaskType;
@@ -53,6 +64,12 @@ export async function resolveAnyTaskById(
   if (workflow) {
     if (workspaceId && workflow.workspaceId && workflow.workspaceId !== workspaceId) return null;
     return { type: "standalone", data: workflow as unknown as Record<string, unknown> };
+  }
+
+  const review = await prReviewService.getPrReview(id);
+  if (review) {
+    if (workspaceId && review.workspaceId && review.workspaceId !== workspaceId) return null;
+    return { type: "pr-review", data: review as unknown as Record<string, unknown> };
   }
 
   return null;
@@ -96,6 +113,19 @@ export async function listUnifiedTasks(opts: {
     }
   }
 
+  if (!opts.type || opts.type === "pr-review") {
+    const conditions = wsId ? [eq(prReviews.workspaceId, wsId)] : [];
+    const rows = await db
+      .select()
+      .from(prReviews)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(desc(prReviews.updatedAt))
+      .limit(limit);
+    for (const r of rows) {
+      collected.push({ type: "pr-review", data: r as unknown as Record<string, unknown> });
+    }
+  }
+
   return collected;
 }
 
@@ -117,6 +147,17 @@ export async function listUnifiedRuns(
       .from(tasks)
       .where(sql`${tasks.metadata}->>'taskConfigId' = ${parentId}`)
       .orderBy(desc(tasks.createdAt))
+      .limit(limit);
+    return rows as unknown as Array<Record<string, unknown>>;
+  }
+
+  if (parent.type === "pr-review") {
+    const parentId = parent.data.id as string;
+    const rows = await db
+      .select()
+      .from(prReviewRuns)
+      .where(eq(prReviewRuns.prReviewId, parentId))
+      .orderBy(desc(prReviewRuns.createdAt))
       .limit(limit);
     return rows as unknown as Array<Record<string, unknown>>;
   }
@@ -151,6 +192,15 @@ export async function getUnifiedRun(
     return (row as unknown as Record<string, unknown>) ?? null;
   }
 
+  if (parent.type === "pr-review") {
+    const parentId = parent.data.id as string;
+    const [row] = await db
+      .select()
+      .from(prReviewRuns)
+      .where(and(eq(prReviewRuns.id, runId), eq(prReviewRuns.prReviewId, parentId)));
+    return (row as unknown as Record<string, unknown>) ?? null;
+  }
+
   const parentId = parent.data.id as string;
   const [row] = await db
     .select()
@@ -163,8 +213,19 @@ export async function getUnifiedRun(
  * Look up a trigger by id for the polymorphic trigger routes. Scoped to a
  * parent Task so that triggers only appear under their owning Task.
  */
+function targetTypeFor(parent: ResolvedTask): string {
+  switch (parent.type) {
+    case "standalone":
+      return "job";
+    case "pr-review":
+      return "pr_review";
+    default:
+      return "task_config";
+  }
+}
+
 export async function getTriggerForParent(parent: ResolvedTask, triggerId: string) {
-  const targetType = parent.type === "standalone" ? "job" : "task_config";
+  const targetType = targetTypeFor(parent);
   const parentId = parent.data.id as string;
   const [trigger] = await db
     .select()
@@ -180,7 +241,7 @@ export async function getTriggerForParent(parent: ResolvedTask, triggerId: strin
 }
 
 export async function listTriggersForParent(parent: ResolvedTask) {
-  const targetType = parent.type === "standalone" ? "job" : "task_config";
+  const targetType = targetTypeFor(parent);
   const parentId = parent.data.id as string;
   return db
     .select()

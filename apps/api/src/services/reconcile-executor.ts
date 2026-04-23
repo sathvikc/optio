@@ -1,8 +1,14 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { tasks, workflowRuns } from "../db/schema.js";
-import type { Action, RepoAction, StandaloneAction, WorldSnapshot } from "@optio/shared";
-import { TaskState, WorkflowRunState, parsePrUrl } from "@optio/shared";
+import { tasks, workflowRuns, prReviews } from "../db/schema.js";
+import type {
+  Action,
+  PrReviewAction,
+  RepoAction,
+  StandaloneAction,
+  WorldSnapshot,
+} from "@optio/shared";
+import { TaskState, WorkflowRunState, PrReviewState, parsePrUrl } from "@optio/shared";
 import * as taskService from "./task-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
 import { logger } from "../logger.js";
@@ -62,7 +68,16 @@ export async function executeAction(
         return await applyTransition(action, snapshot);
 
       case "patchStatus":
-        return await applyPatchStatus(action, snapshot);
+        if (snapshot.run.kind === "pr-review") {
+          return await applyPrReviewPatchStatus(
+            action as Extract<PrReviewAction, { kind: "patchStatus" }>,
+            snapshot,
+          );
+        }
+        return await applyPatchStatus(
+          action as Extract<RepoAction, { kind: "patchStatus" }>,
+          snapshot,
+        );
 
       case "requeueForAgent":
         return await applyRequeueForAgent(action, snapshot);
@@ -78,6 +93,15 @@ export async function executeAction(
 
       case "autoMergePr":
         return await applyAutoMergePr(snapshot);
+
+      case "launchReviewRun":
+        return await applyLaunchReviewRun(action, snapshot);
+
+      case "submitReview":
+        return await applySubmitReview(snapshot);
+
+      case "markStale":
+        return await applyMarkStale(snapshot);
 
       default: {
         const _exhaustive: never = action;
@@ -97,7 +121,7 @@ export async function executeAction(
 // ── Applicators ─────────────────────────────────────────────────────────────
 
 async function applyTransition(
-  action: RepoAction | StandaloneAction,
+  action: RepoAction | StandaloneAction | PrReviewAction,
   snapshot: WorldSnapshot,
 ): Promise<ExecuteOutcome> {
   if (action.kind !== "transition") {
@@ -105,6 +129,12 @@ async function applyTransition(
   }
   if (snapshot.run.kind === "repo") {
     return applyRepoTransition(action as Extract<RepoAction, { kind: "transition" }>, snapshot);
+  }
+  if (snapshot.run.kind === "pr-review") {
+    return applyPrReviewTransition(
+      action as Extract<PrReviewAction, { kind: "transition" }>,
+      snapshot,
+    );
   }
   return applyStandaloneTransition(
     action as Extract<StandaloneAction, { kind: "transition" }>,
@@ -237,15 +267,18 @@ async function applyPatchStatus(
   return { status: "applied", reason: action.reason };
 }
 
+function tableForKind(
+  kind: "repo" | "standalone" | "pr-review",
+): "tasks" | "workflow_runs" | "pr_reviews" {
+  return kind === "repo" ? "tasks" : kind === "pr-review" ? "pr_reviews" : "workflow_runs";
+}
+
 async function applyClearControlIntent(snapshot: WorldSnapshot): Promise<ExecuteOutcome> {
   const id = snapshot.run.ref.id;
   const version = snapshot.run.status.updatedAt;
-  const casResult = await casUpdate(
-    snapshot.run.kind === "repo" ? "tasks" : "workflow_runs",
-    id,
-    version,
-    { controlIntent: null },
-  );
+  const casResult = await casUpdate(tableForKind(snapshot.run.kind), id, version, {
+    controlIntent: null,
+  });
   if (casResult === "stale") return { status: "stale", reason: "cas_failed_clear_intent" };
   return { status: "applied", reason: "cleared_control_intent" };
 }
@@ -256,15 +289,10 @@ async function applyDeferWithBackoff(
 ): Promise<ExecuteOutcome> {
   const id = snapshot.run.ref.id;
   const version = snapshot.run.status.updatedAt;
-  const casResult = await casUpdate(
-    snapshot.run.kind === "repo" ? "tasks" : "workflow_runs",
-    id,
-    version,
-    {
-      reconcileBackoffUntil: new Date(untilMs),
-      reconcileAttempts: snapshot.run.status.reconcileAttempts + 1,
-    },
-  );
+  const casResult = await casUpdate(tableForKind(snapshot.run.kind), id, version, {
+    reconcileBackoffUntil: new Date(untilMs),
+    reconcileAttempts: snapshot.run.status.reconcileAttempts + 1,
+  });
   if (casResult === "stale") {
     return { status: "stale", reason: "cas_failed_defer_backoff" };
   }
@@ -551,7 +579,7 @@ async function publishStandaloneStateChange(
 // ── CAS helpers ─────────────────────────────────────────────────────────────
 
 async function casUpdate(
-  table: "tasks" | "workflow_runs",
+  table: "tasks" | "workflow_runs" | "pr_reviews",
   id: string,
   version: Date,
   patch: Record<string, unknown>,
@@ -565,6 +593,14 @@ async function casUpdate(
       .returning({ id: tasks.id });
     return rows.length > 0 ? "applied" : "stale";
   }
+  if (table === "pr_reviews") {
+    const rows = await db
+      .update(prReviews)
+      .set(payload)
+      .where(and(eq(prReviews.id, id), eq(prReviews.updatedAt, version)))
+      .returning({ id: prReviews.id });
+    return rows.length > 0 ? "applied" : "stale";
+  }
   const rows = await db
     .update(workflowRuns)
     .set(payload)
@@ -572,6 +608,105 @@ async function casUpdate(
     .returning({ id: workflowRuns.id });
   return rows.length > 0 ? "applied" : "stale";
 }
+
+// ── PR Review applicators ──────────────────────────────────────────────────
+
+async function applyPrReviewTransition(
+  action: Extract<PrReviewAction, { kind: "transition" }>,
+  snapshot: WorldSnapshot,
+): Promise<ExecuteOutcome> {
+  if (snapshot.run.kind !== "pr-review") {
+    return { status: "error", reason: "wrong_kind", error: new Error("not pr-review") };
+  }
+  const id = snapshot.run.ref.id;
+  const version = snapshot.run.status.updatedAt;
+  const patch: Record<string, unknown> = {
+    reconcileBackoffUntil: null,
+    reconcileAttempts: 0,
+    ...(action.statusPatch ?? {}),
+  };
+  if (action.clearControlIntent) patch.controlIntent = null;
+
+  const casResult = await casUpdate("pr_reviews", id, version, patch);
+  if (casResult === "stale") return { status: "stale", reason: "cas_failed_pre_transition" };
+
+  const { transitionPrReview } = await import("./pr-review-service.js");
+  const result = await transitionPrReview(id, action.to, action.trigger, {
+    message: action.reason,
+  });
+  if (!result) return { status: "stale", reason: "transition_not_applied" };
+
+  return { status: "applied", reason: `pr_review_transition:${action.to}` };
+}
+
+async function applyLaunchReviewRun(
+  action: Extract<PrReviewAction, { kind: "launchReviewRun" }>,
+  snapshot: WorldSnapshot,
+): Promise<ExecuteOutcome> {
+  if (snapshot.run.kind !== "pr-review") {
+    return { status: "error", reason: "wrong_kind", error: new Error("not pr-review") };
+  }
+  const prReviewId = snapshot.run.ref.id;
+  const { enqueueReviewRun } = await import("./pr-review-service.js");
+  try {
+    await enqueueReviewRun(prReviewId, action.runKind, {
+      prompt: action.prompt,
+      resumeSessionId: action.resumeSessionId,
+    });
+    return { status: "applied", reason: `launch_${action.runKind}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { status: "error", reason: msg, error: err };
+  }
+}
+
+async function applySubmitReview(snapshot: WorldSnapshot): Promise<ExecuteOutcome> {
+  if (snapshot.run.kind !== "pr-review") {
+    return { status: "error", reason: "wrong_kind", error: new Error("not pr-review") };
+  }
+  const prReviewId = snapshot.run.ref.id;
+  const { submitReview } = await import("./pr-review-service.js");
+  try {
+    await submitReview(prReviewId);
+    return { status: "applied", reason: "auto_submitted" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { status: "error", reason: msg, error: err };
+  }
+}
+
+async function applyMarkStale(snapshot: WorldSnapshot): Promise<ExecuteOutcome> {
+  if (snapshot.run.kind !== "pr-review") {
+    return { status: "error", reason: "wrong_kind", error: new Error("not pr-review") };
+  }
+  const prReviewId = snapshot.run.ref.id;
+  const { markStale } = await import("./pr-review-service.js");
+  const result = await markStale(prReviewId);
+  if (!result) return { status: "skipped", reason: "not_in_ready_state" };
+  return { status: "applied", reason: "marked_stale" };
+}
+
+async function applyPrReviewPatchStatus(
+  action: Extract<PrReviewAction, { kind: "patchStatus" }>,
+  snapshot: WorldSnapshot,
+): Promise<ExecuteOutcome> {
+  if (snapshot.run.kind !== "pr-review") {
+    return { status: "error", reason: "wrong_kind", error: new Error("not pr-review") };
+  }
+  const id = snapshot.run.ref.id;
+  const version = snapshot.run.status.updatedAt;
+  const casResult = await casUpdate(
+    "pr_reviews",
+    id,
+    version,
+    action.statusPatch as Record<string, unknown>,
+  );
+  if (casResult === "stale") return { status: "stale", reason: "cas_failed_patch" };
+  return { status: "applied", reason: action.reason };
+}
+
+// Prevent TS unused-import warning on PrReviewState since it's only used at type level.
+void PrReviewState;
 
 // Re-export for convenience.
 export { TaskState, WorkflowRunState };

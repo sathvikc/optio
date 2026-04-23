@@ -193,19 +193,19 @@ describe("pr-reviews route body validation", () => {
     app = await buildRouteTestApp(prReviewRoutes);
   });
 
-  it("rejects POST /api/pull-requests/review with missing prUrl", async () => {
+  it("rejects POST /api/pr-reviews with missing prUrl", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/api/pull-requests/review",
+      url: "/api/pr-reviews",
       payload: {},
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("rejects POST /api/pull-requests/review with non-string prUrl", async () => {
+  it("rejects POST /api/pr-reviews with non-string prUrl", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/api/pull-requests/review",
+      url: "/api/pr-reviews",
       payload: { prUrl: 42 },
     });
     expect(res.statusCode).toBe(400);
@@ -229,11 +229,11 @@ describe("pr-reviews route body validation", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("rejects PATCH /api/tasks/:id/review-draft with non-string summary", async () => {
+  it("rejects PATCH /api/pr-reviews/:id with non-string summary", async () => {
     mockGetReviewDraft.mockResolvedValue({ id: "d1" });
     const res = await app.inject({
       method: "PATCH",
-      url: "/api/tasks/task-1/review-draft",
+      url: "/api/pr-reviews/d1",
       payload: { summary: 123 },
     });
     expect(res.statusCode).toBe(400);

@@ -1,6 +1,6 @@
 import { eq, desc, and, or, ilike, gte, lte, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { tasks, taskEvents, taskLogs, users, reviewDrafts, repos } from "../db/schema.js";
+import { tasks, taskEvents, taskLogs, users, repos } from "../db/schema.js";
 import {
   TaskState,
   transition,
@@ -69,47 +69,16 @@ export async function getTask(id: string) {
 }
 
 /**
- * Fill `prUrl`/`prNumber` on pr_review tasks for HTTP responses. The columns
- * stay null on the row — that's what keeps the reconciler from treating the
- * external PR as our own — so we denormalize at the read boundary.
- *
- * Resolution order for pr_review rows: existing column value (legacy rows
- * that predate the fix) → matching review_drafts row (root review tasks) →
- * `metadata.prUrl`/`metadata.prNumber` (chat-turn tasks, which don't own a
- * draft). Non-pr_review rows pass through unchanged.
+ * No-op shim kept for call-site back-compat. External PR reviews moved off
+ * the `tasks` table into the `pr_reviews` primitive, so there are no
+ * pr_review tasks rows to hydrate anymore. The function returns rows
+ * unchanged and exists only so routes that still call it keep typechecking.
+ * Safe to delete in a follow-up once callers are migrated.
  */
 export async function hydratePrReviewPrUrls<T extends typeof tasks.$inferSelect>(
   rows: T[],
 ): Promise<T[]> {
-  const reviewIds = rows.filter((r) => r.taskType === "pr_review").map((r) => r.id);
-  if (reviewIds.length === 0) return rows;
-
-  const drafts = await db
-    .select({
-      taskId: reviewDrafts.taskId,
-      prUrl: reviewDrafts.prUrl,
-      prNumber: reviewDrafts.prNumber,
-    })
-    .from(reviewDrafts)
-    .where(
-      sql`${reviewDrafts.taskId} IN (${sql.join(
-        reviewIds.map((id) => sql`${id}`),
-        sql`, `,
-      )})`,
-    );
-
-  const byTaskId = new Map(drafts.map((d) => [d.taskId, d]));
-  return rows.map((r) => {
-    if (r.taskType !== "pr_review") return r;
-    if (r.prUrl) return r;
-    const d = byTaskId.get(r.id);
-    if (d) return { ...r, prUrl: d.prUrl, prNumber: d.prNumber };
-    const meta = r.metadata as { prUrl?: unknown; prNumber?: unknown } | null;
-    const metaPrUrl = typeof meta?.prUrl === "string" ? meta.prUrl : null;
-    const metaPrNumber = typeof meta?.prNumber === "number" ? meta.prNumber : null;
-    if (metaPrUrl) return { ...r, prUrl: metaPrUrl, prNumber: metaPrNumber };
-    return r;
-  });
+  return rows;
 }
 
 export async function listTasks(opts?: {
@@ -567,9 +536,6 @@ export async function forceRedoTask(id: string) {
 
   // Delete all logs
   await db.delete(taskLogs).where(eq(taskLogs.taskId, id));
-
-  // Reset any associated review draft so stale summaries don't persist
-  await db.delete(reviewDrafts).where(eq(reviewDrafts.taskId, id));
 
   // Record the force-redo event (keep event history for audit)
   const fromState = task.state as TaskState;

@@ -16,6 +16,7 @@ import {
   Terminal,
   Bot,
   GitBranch,
+  GitPullRequest,
   Webhook,
   Plug,
   BarChart3,
@@ -46,6 +47,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Run",
     items: [
       { href: "/tasks", label: "Tasks", icon: ListTodo },
+      { href: "/reviews", label: "Reviews", icon: GitPullRequest },
       { href: "/sessions", label: "Sessions", icon: Terminal },
     ],
   },
