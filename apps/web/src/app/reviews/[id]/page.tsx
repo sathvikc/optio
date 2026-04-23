@@ -1,11 +1,21 @@
 "use client";
 
-import { use, useCallback, useEffect, useRef, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
+import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
+import { classifyError } from "@optio/shared";
+import { ErrorBoundary } from "@/components/error-boundary";
+import { LogViewer } from "@/components/log-viewer";
+import { DetailHeader } from "@/components/detail-header";
+import { StatePipelineStrip } from "@/components/state-pipeline-strip";
+import { PrStatusBar } from "@/components/pr-status-bar";
+import { ChatComposer } from "@/components/chat-box";
+import type { UserMessage } from "@/components/log-viewer";
+import { ReviewPipelineTimeline } from "@/components/review-pipeline-timeline";
 import {
   Loader2,
   Check,
@@ -13,16 +23,16 @@ import {
   MessageSquare,
   Send,
   AlertTriangle,
+  AlertCircle,
   RefreshCw,
   GitMerge,
   ChevronDown,
-  ChevronUp,
+  ChevronRight,
   Plus,
   Trash2,
   ExternalLink,
   Clock,
   Zap,
-  Bot,
   GitPullRequest,
   XCircle,
   RotateCcw,
@@ -50,7 +60,7 @@ interface Review {
   updatedAt: string;
 }
 
-const STATE_STRIP = [
+const PIPELINE_STEPS = [
   { key: "queued", label: "Queued" },
   { key: "waiting_ci", label: "CI" },
   { key: "reviewing", label: "Reviewing" },
@@ -58,63 +68,28 @@ const STATE_STRIP = [
   { key: "submitted", label: "Submitted" },
 ];
 
-function StateStrip({ state }: { state: string }) {
-  const idx = STATE_STRIP.findIndex((s) => s.key === state);
-  const effectiveIdx = state === "stale" ? 3 : state === "failed" ? -1 : idx;
-  return (
-    <div className="flex items-center gap-1 text-[11px]">
-      {STATE_STRIP.map((s, i) => (
-        <div key={s.key} className="flex items-center gap-1">
-          <span
-            className={cn(
-              "px-2 py-0.5 rounded-md font-medium",
-              i < effectiveIdx
-                ? "bg-success/10 text-success"
-                : i === effectiveIdx
-                  ? state === "stale"
-                    ? "bg-error/10 text-error"
-                    : "bg-primary/10 text-primary"
-                  : "bg-bg text-text-muted",
-            )}
-          >
-            {s.label}
-          </span>
-          {i < STATE_STRIP.length - 1 && <span className="text-text-muted/30">›</span>}
-        </div>
-      ))}
-      {state === "stale" && (
-        <span className="ml-2 px-2 py-0.5 rounded-md bg-error/10 text-error font-medium">
-          Stale
-        </span>
-      )}
-      {state === "failed" && (
-        <span className="ml-2 px-2 py-0.5 rounded-md bg-error/10 text-error font-medium">
-          Failed
-        </span>
-      )}
-      {state === "cancelled" && (
-        <span className="ml-2 px-2 py-0.5 rounded-md bg-bg text-text-muted font-medium">
-          Cancelled
-        </span>
-      )}
-    </div>
-  );
+function pipelineCurrentIndex(state: string): number {
+  if (state === "stale") return 3;
+  if (state === "failed" || state === "cancelled") return -1;
+  return PIPELINE_STEPS.findIndex((s) => s.key === state);
 }
 
 export default function ReviewDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const router = useRouter();
+  const _router = useRouter();
 
   const [review, setReview] = useState<Review | null>(null);
   const [loading, setLoading] = useState(true);
   const [runs, setRuns] = useState<any[]>([]);
-  const [logs, setLogs] = useState<any[]>([]);
-  const [logRunId, setLogRunId] = useState<string | null>(null);
-  const [showLogs, setShowLogs] = useState(false);
   const [prStatus, setPrStatus] = useState<any>(null);
-  const [chat, setChat] = useState<any[]>([]);
+  // User-sent chat turns, rendered inline in the log stream via LogViewer's
+  // userMessages prop. Hydrated from the persisted chat history on load so
+  // past user turns still appear after a refresh.
+  const [userMessages, setUserMessages] = useState<UserMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(true);
+  const [verdictCollapsed, setVerdictCollapsed] = useState(false);
 
   // Editable fields
   const [summary, setSummary] = useState("");
@@ -130,6 +105,10 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
   const [mergeMethod, setMergeMethod] = useState<"squash" | "merge" | "rebase">("squash");
   const [mergeMenuOpen, setMergeMenuOpen] = useState(false);
 
+  // Live log streaming via WebSocket — same hook contract as the task page's
+  // useLogs, plugged into LogViewer's externalLogs prop.
+  const externalLogs = usePrReviewLogs(id);
+
   usePageTitle(review ? `Review: PR #${review.prNumber}` : "Review");
 
   const fetchAll = useCallback(async () => {
@@ -142,7 +121,6 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
       setComments(r.review.fileComments ?? []);
       setDirty(false);
 
-      // PR status (CI etc.)
       if (r.review.prUrl) {
         api
           .getPrStatus(r.review.prUrl)
@@ -150,11 +128,25 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
           .catch(() => {});
       }
 
-      // Chat only if the draft has produced output.
+      // Hydrate inline user messages from persisted chat history (user role
+      // only — assistant replies live in the log stream already).
       if (["ready", "stale", "submitted"].includes(r.review.state)) {
         api
           .listPrReviewChat(id)
-          .then((res) => setChat(res.messages))
+          .then((res) => {
+            setUserMessages((prev) => {
+              // Don't clobber locally-sent messages whose IDs start with "local-".
+              const localOnly = prev.filter((m) => m.timestamp.startsWith("local-"));
+              const hydrated: UserMessage[] = res.messages
+                .filter((m) => m.role === "user")
+                .map((m) => ({
+                  text: m.content,
+                  timestamp: m.createdAt,
+                  status: "sent" as const,
+                }));
+              return [...hydrated, ...localOnly];
+            });
+          })
           .catch(() => {});
       }
     } catch (err: any) {
@@ -177,26 +169,6 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
     return () => clearInterval(t);
   }, [review?.state, chatSending, fetchAll]);
 
-  const loadLogs = useCallback(async () => {
-    try {
-      const res = await api.listPrReviewLogs(id);
-      setLogs(res.logs);
-      setLogRunId(res.runId ?? null);
-    } catch {}
-  }, [id]);
-
-  useEffect(() => {
-    if (showLogs) loadLogs();
-  }, [showLogs, loadLogs]);
-
-  // Refresh logs while reviewing.
-  useEffect(() => {
-    if (!review || !showLogs) return;
-    if (review.state !== "reviewing" && review.state !== "queued") return;
-    const t = setInterval(loadLogs, 3000);
-    return () => clearInterval(t);
-  }, [review?.state, showLogs, loadLogs]);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted">
@@ -213,11 +185,9 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
 
   const isEditable = ["ready", "stale"].includes(review.state);
   const isWorking = ["queued", "waiting_ci", "reviewing"].includes(review.state);
+  const hasDraft = ["ready", "stale", "submitted"].includes(review.state);
   const prIsOpen = prStatus?.prState === "open";
   const checksOk = prStatus?.checksStatus === "passing" || prStatus?.checksStatus === "none";
-  // We only hard-disable merge when the PR is already merged/closed — merging
-  // with failing CI is the user's call (GitHub will enforce branch protection
-  // rules server-side).
   const canMerge = prIsOpen;
   const mergeBlockedReason = !prStatus
     ? "Loading PR status..."
@@ -300,30 +270,28 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
   const handleSendChat = async () => {
     if (!chatInput.trim() || chatSending) return;
     const msg = chatInput.trim();
+    const sentAt = new Date().toISOString();
     setChatInput("");
-    setChat((prev) => [
-      ...prev,
-      {
-        id: `local-${Date.now()}`,
-        prReviewId: id,
-        runId: null,
-        role: "user",
-        content: msg,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+    setUserMessages((prev) => [...prev, { text: msg, timestamp: sentAt, status: "sending" }]);
     setChatSending(true);
     try {
       await api.postPrReviewChat(id, msg);
-      toast.success("Sent to agent");
-      // Poll for response
+      setUserMessages((prev) =>
+        prev.map((m) =>
+          m.text === msg && m.timestamp === sentAt && m.status === "sending"
+            ? { ...m, status: "sent" }
+            : m,
+        ),
+      );
+      // Refresh the review periodically so state transitions (and any verdict
+      // patch the agent makes during chat) surface quickly. The assistant's
+      // textual reply shows up in the log stream.
       const start = Date.now();
       const tick = setInterval(async () => {
         const res = await api.listPrReviewChat(id).catch(() => null);
         if (res) {
-          setChat(res.messages);
           const hasAssistantReply = res.messages.some(
-            (m, i) => m.role === "assistant" && new Date(m.createdAt).getTime() > start,
+            (m) => m.role === "assistant" && new Date(m.createdAt).getTime() > start,
           );
           if (hasAssistantReply || Date.now() - start > 300_000) {
             clearInterval(tick);
@@ -333,6 +301,13 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
         }
       }, 3000);
     } catch (err: any) {
+      setUserMessages((prev) =>
+        prev.map((m) =>
+          m.text === msg && m.timestamp === sentAt && m.status === "sending"
+            ? { ...m, status: "failed" }
+            : m,
+        ),
+      );
       toast.error(err.message || "Failed to send");
       setChatSending(false);
     }
@@ -357,95 +332,162 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
     setDirty(true);
   };
 
+  const pipelineCurrent = pipelineCurrentIndex(review.state);
+  const terminal =
+    review.state === "stale"
+      ? { label: "Stale", tone: "error" as const }
+      : review.state === "failed"
+        ? { label: "Failed", tone: "error" as const }
+        : review.state === "cancelled"
+          ? { label: "Cancelled", tone: "muted" as const }
+          : undefined;
+
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="shrink-0 p-4 border-b border-border bg-bg-card">
-        <div className="max-w-5xl mx-auto flex flex-col gap-3">
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 mb-1 text-xs text-text-muted">
-                <GitPullRequest className="w-3.5 h-3.5" />
-                <span>
-                  {review.repoOwner}/{review.repoName} · #{review.prNumber}
-                </span>
-                <a
-                  href={review.prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 hover:text-primary"
-                >
-                  View on {review.prUrl.includes("gitlab") ? "GitLab" : "GitHub"}
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-              <h1 className="text-lg font-bold tracking-tight">Review: PR #{review.prNumber}</h1>
-              <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <StateStrip state={review.state} />
-                {review.origin === "auto" && (
-                  <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md bg-primary/10 text-primary">
-                    <Zap className="w-3 h-3" />
-                    Auto
-                  </span>
-                )}
-                <span className="text-[11px] text-text-muted">
-                  Updated {formatRelativeTime(review.updatedAt)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {["ready", "stale", "submitted", "failed"].includes(review.state) && (
-                <button
-                  onClick={handleReReview}
-                  disabled={reReviewing}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary/10 text-primary text-xs hover:bg-primary/20 disabled:opacity-50"
-                  title="Launch a fresh review run"
-                >
-                  {reReviewing ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <RotateCcw className="w-3 h-3" />
-                  )}
-                  Re-review
-                </button>
-              )}
-              {!["cancelled", "submitted"].includes(review.state) && (
-                <button
-                  onClick={handleCancel}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-error/10 text-error text-xs hover:bg-error/20"
-                >
-                  <XCircle className="w-3 h-3" />
-                  Cancel
-                </button>
-              )}
+      <DetailHeader
+        title={`Review: PR #${review.prNumber}`}
+        subtitle={
+          <>
+            <GitPullRequest className="w-3.5 h-3.5" />
+            <span>
+              {review.repoOwner}/{review.repoName} · #{review.prNumber}
+            </span>
+            <a
+              href={review.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 hover:text-primary"
+            >
+              View on {review.prUrl.includes("gitlab") ? "GitLab" : "GitHub"}
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </>
+        }
+        state={review.state}
+        extraBadges={
+          review.origin === "auto" ? (
+            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md bg-primary/10 text-primary">
+              <Zap className="w-3 h-3" />
+              Auto
+            </span>
+          ) : null
+        }
+        metaItems={[
+          <>
+            <Clock className="w-3 h-3" />
+            Updated {formatRelativeTime(review.updatedAt)}
+          </>,
+        ]}
+        rightSlot={
+          <>
+            {["ready", "stale", "submitted", "failed"].includes(review.state) && (
               <button
-                onClick={fetchAll}
-                className="p-1.5 rounded-md hover:bg-bg-hover text-text-muted"
-                title="Refresh"
+                onClick={handleReReview}
+                disabled={reReviewing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary/10 text-primary text-xs hover:bg-primary/20 disabled:opacity-50"
+                title="Launch a fresh review run"
               >
-                <RefreshCw className="w-4 h-4" />
+                {reReviewing ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-3 h-3" />
+                )}
+                Re-review
               </button>
-            </div>
-          </div>
+            )}
+            {!["cancelled", "submitted"].includes(review.state) && (
+              <button
+                onClick={handleCancel}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-error/10 text-error text-xs hover:bg-error/20"
+              >
+                <XCircle className="w-3 h-3" />
+                Cancel
+              </button>
+            )}
+            <button
+              onClick={fetchAll}
+              className="p-1.5 rounded-md hover:bg-bg-hover text-text-muted"
+              title="Refresh"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </>
+        }
+        actions={
+          <StatePipelineStrip
+            steps={PIPELINE_STEPS}
+            current={pipelineCurrent}
+            errorAtCurrent={review.state === "stale"}
+            terminal={terminal}
+          />
+        }
+      />
+
+      <div className="shrink-0 border-b border-border bg-bg-card px-4 py-2">
+        <div className="max-w-5xl mx-auto">
+          <PrStatusBar
+            checksStatus={prStatus?.checksStatus}
+            reviewStatus={prStatus?.reviewStatus}
+            prState={prStatus?.prState}
+            actions={
+              <button
+                onClick={() => setShowTimeline(!showTimeline)}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs transition-colors",
+                  showTimeline ? "bg-primary/10 text-primary" : "text-text-muted hover:bg-bg-hover",
+                )}
+              >
+                Timeline
+              </button>
+            }
+          />
         </div>
       </div>
 
-      {/* Error banner */}
-      {review.errorMessage && review.state === "failed" && (
-        <div className="shrink-0 border-b border-error/20 bg-error/5 px-4 py-3">
-          <div className="max-w-5xl mx-auto flex items-start gap-2 text-sm text-error">
-            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <div>
-              <div className="font-medium">Review failed</div>
-              <div className="text-xs opacity-80 mt-0.5 whitespace-pre-wrap">
-                {review.errorMessage}
+      {review.errorMessage &&
+        review.state === "failed" &&
+        (() => {
+          const classified = classifyError(review.errorMessage);
+          return (
+            <div className="shrink-0 border-b border-error/20 bg-error/5">
+              <div className="max-w-5xl mx-auto px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-error shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div>
+                      <h3 className="text-sm font-medium text-error">{classified.title}</h3>
+                      <p className="text-xs text-error/70 mt-0.5">{classified.description}</p>
+                    </div>
+                    <div className="p-2.5 rounded-md bg-bg/50 border border-border">
+                      <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1">
+                        Suggested fix
+                      </div>
+                      <pre className="text-xs text-text/80 whitespace-pre-wrap font-mono">
+                        {classified.remedy}
+                      </pre>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {classified.retryable && (
+                        <button
+                          onClick={handleReReview}
+                          disabled={reReviewing}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-white text-xs hover:bg-primary-hover disabled:opacity-50 btn-press transition-all"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          Re-review
+                        </button>
+                      )}
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-error/10 text-error">
+                        {classified.category}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          );
+        })()}
 
-      {/* Stale banner */}
       {review.state === "stale" && (
         <div className="shrink-0 border-b border-warning/20 bg-warning/5 px-4 py-3">
           <div className="max-w-5xl mx-auto flex items-center gap-2 text-sm text-warning">
@@ -455,397 +497,337 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
         </div>
       )}
 
-      {/* Body */}
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-5xl mx-auto p-4 space-y-4">
-          {/* Working state */}
-          {isWorking && (
-            <div className="rounded-lg border border-border bg-bg-card p-4">
-              <div className="flex items-center gap-2 text-sm">
-                {review.state === "waiting_ci" ? (
-                  <Clock className="w-4 h-4 text-text-muted" />
+      {/* Main content: logs + sidebar — mirrors /tasks/[id] */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Log column */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          {/* Verdict + summary widget — collapsible. When collapsed, the
+              header strip stays visible so the user can see the verdict at a
+              glance without expanding. */}
+          {hasDraft && (
+            <div className="shrink-0 border-b border-border bg-bg-card">
+              <button
+                onClick={() => setVerdictCollapsed((v) => !v)}
+                className="w-full flex items-center gap-2 px-4 py-2 text-xs hover:bg-bg-hover transition-colors"
+                title={verdictCollapsed ? "Expand draft" : "Collapse to focus on logs"}
+              >
+                {verdictCollapsed ? (
+                  <ChevronRight className="w-3.5 h-3.5 text-text-muted shrink-0" />
                 ) : (
-                  <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                  <ChevronDown className="w-3.5 h-3.5 text-text-muted shrink-0" />
                 )}
-                <span className="font-medium">
-                  {review.state === "waiting_ci"
-                    ? "Waiting for CI to finish..."
-                    : review.state === "queued"
-                      ? "Queued — run will start shortly"
-                      : "Agent is reviewing the PR..."}
-                </span>
-              </div>
-              <p className="text-xs text-text-muted mt-1">
-                The draft will appear here when the agent is done.
-              </p>
-            </div>
-          )}
-
-          {/* Draft editor (ready/stale/submitted) */}
-          {(isEditable || review.state === "submitted") && (
-            <div className="rounded-lg border border-border bg-bg-card p-4 space-y-4">
-              {/* Verdict */}
-              <div>
-                <label className="text-xs font-medium text-text-muted mb-2 block">Verdict</label>
-                <div className="flex gap-2">
-                  {[
-                    { value: "approve", label: "Approve", Icon: Check, color: "success" },
-                    {
-                      value: "request_changes",
-                      label: "Request Changes",
-                      Icon: X,
-                      color: "error",
-                    },
-                    {
-                      value: "comment",
-                      label: "Comment",
-                      Icon: MessageSquare,
-                      color: "text-muted",
-                    },
-                  ].map(({ value, label, Icon, color }) => (
-                    <button
-                      key={value}
-                      disabled={!isEditable}
-                      onClick={() => {
-                        setVerdict(value);
-                        setDirty(true);
-                      }}
-                      className={cn(
-                        "flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-                        verdict === value
-                          ? `bg-${color}/10 text-${color} border-${color}/30`
-                          : "bg-bg border-border text-text-muted hover:bg-bg-hover",
-                      )}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Summary */}
-              <div>
-                <label className="text-xs font-medium text-text-muted mb-2 block">
-                  Review Summary
-                </label>
-                <textarea
-                  value={summary}
-                  readOnly={!isEditable}
-                  onChange={(e) => {
-                    setSummary(e.target.value);
-                    setDirty(true);
-                  }}
-                  rows={6}
-                  className="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm focus:border-primary focus:ring-1 focus:ring-primary/20 focus:outline-none resize-y disabled:opacity-70"
-                  placeholder="Review summary..."
-                />
-              </div>
-
-              {/* Inline comments */}
-              <div>
-                <label className="text-xs font-medium text-text-muted mb-2 block">
-                  Inline Comments ({comments.length})
-                </label>
-                <div className="space-y-2">
-                  {comments.map((c, i) => (
-                    <div key={i} className="flex gap-2 p-2 rounded-md bg-bg border border-border">
-                      <div className="flex-1 space-y-1.5">
-                        <div className="flex gap-2">
-                          <input
-                            value={c.path ?? ""}
-                            readOnly={!isEditable}
-                            onChange={(e) => updateComment(i, "path", e.target.value)}
-                            placeholder="file/path.ts"
-                            className="flex-1 px-2 py-1 rounded bg-bg-card border border-border text-xs focus:border-primary focus:outline-none"
-                          />
-                          <input
-                            value={c.line ?? ""}
-                            readOnly={!isEditable}
-                            onChange={(e) =>
-                              updateComment(
-                                i,
-                                "line",
-                                e.target.value ? parseInt(e.target.value) : undefined,
-                              )
-                            }
-                            placeholder="Line"
-                            type="text"
-                            inputMode="numeric"
-                            className="w-20 px-2 py-1 rounded bg-bg-card border border-border text-xs focus:border-primary focus:outline-none"
-                          />
-                        </div>
-                        <textarea
-                          value={c.body ?? ""}
-                          readOnly={!isEditable}
-                          onChange={(e) => updateComment(i, "body", e.target.value)}
-                          placeholder="Comment..."
-                          rows={2}
-                          className="w-full px-2 py-1 rounded bg-bg-card border border-border text-xs focus:border-primary focus:outline-none resize-y"
-                        />
-                      </div>
-                      {isEditable && (
-                        <button
-                          onClick={() => removeComment(i)}
-                          className="text-text-muted hover:text-error transition-colors p-1 self-start"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {isEditable && (
-                    <button
-                      onClick={addComment}
-                      className="flex items-center gap-1 text-xs text-primary hover:text-primary-hover"
-                    >
-                      <Plus className="w-3 h-3" />
-                      Add comment
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="flex items-center justify-between gap-3 pt-2 border-t border-border">
-                <div className="flex items-center gap-2">
-                  {isEditable && dirty && (
-                    <button
-                      onClick={handleSave}
-                      disabled={saving}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-bg border border-border text-xs text-text-muted hover:bg-bg-hover disabled:opacity-50"
-                    >
-                      {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                      Save Draft
-                    </button>
-                  )}
-                  {isEditable && (
-                    <button
-                      onClick={handleSubmit}
-                      disabled={submitting || !verdict}
-                      className="flex items-center gap-1.5 px-4 py-1.5 rounded-md bg-primary text-white text-xs font-medium hover:bg-primary-hover disabled:opacity-50"
-                    >
-                      {submitting ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Send className="w-3 h-3" />
-                      )}
-                      Submit Review
-                    </button>
-                  )}
-                  {review.state === "submitted" && (
-                    <span className="inline-flex items-center gap-1 text-xs text-success">
-                      <Check className="w-3.5 h-3.5" />
-                      Submitted{review.autoSubmitted ? " automatically" : ""}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {prStatus && (
-                    <span className="flex items-center gap-1.5 text-xs text-text-muted">
-                      <span
-                        className={cn(
-                          "w-2 h-2 rounded-full",
-                          prStatus.checksStatus === "passing"
-                            ? "bg-success"
-                            : prStatus.checksStatus === "failing"
-                              ? "bg-error"
-                              : prStatus.checksStatus === "pending"
-                                ? "bg-warning animate-pulse"
-                                : "bg-text-muted/30",
-                        )}
-                      />
-                      CI: {prStatus.checksStatus}
-                    </span>
-                  )}
-                  <div className="relative">
-                    <div className="flex">
-                      <button
-                        onClick={handleMerge}
-                        disabled={merging || !canMerge}
-                        title={mergeBlockedReason || `Merge with ${mergeMethod} strategy`}
-                        className={cn(
-                          "flex items-center gap-1.5 px-3 py-1.5 rounded-l-md text-xs font-medium border disabled:opacity-50",
-                          !checksOk && prIsOpen
-                            ? "bg-warning/10 text-warning hover:bg-warning/20 border-warning/30"
-                            : "bg-success/10 text-success hover:bg-success/20 border-success/20",
-                        )}
-                      >
-                        {merging ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <GitMerge className="w-3 h-3" />
-                        )}
-                        {!checksOk && prIsOpen ? "Merge anyway" : "Merge"}
-                      </button>
-                      <button
-                        onClick={() => setMergeMenuOpen((v) => !v)}
-                        className={cn(
-                          "px-1.5 py-1.5 rounded-r-md text-xs border border-l-0",
-                          !checksOk && prIsOpen
-                            ? "bg-warning/10 text-warning hover:bg-warning/20 border-warning/30"
-                            : "bg-success/10 text-success hover:bg-success/20 border-success/20",
-                        )}
-                      >
-                        <ChevronDown className="w-3 h-3" />
-                      </button>
-                    </div>
-                    {mergeMenuOpen && (
-                      <div className="absolute right-0 top-full mt-1 bg-bg-card border border-border rounded-md shadow-lg z-10 py-1 min-w-[140px]">
-                        {(["squash", "merge", "rebase"] as const).map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => {
-                              setMergeMethod(m);
-                              setMergeMenuOpen(false);
-                            }}
-                            className={cn(
-                              "w-full text-left px-3 py-1.5 text-xs hover:bg-bg-hover",
-                              mergeMethod === m ? "text-primary font-medium" : "text-text",
-                            )}
-                          >
-                            {m === "squash"
-                              ? "Squash and merge"
-                              : m === "rebase"
-                                ? "Rebase and merge"
-                                : "Create a merge commit"}
-                          </button>
-                        ))}
-                      </div>
+                <span className="font-medium text-text-muted">Review draft</span>
+                {verdict && (
+                  <span
+                    className={cn(
+                      "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                      verdict === "approve"
+                        ? "bg-success/10 text-success"
+                        : verdict === "request_changes"
+                          ? "bg-error/10 text-error"
+                          : "bg-bg text-text-muted",
                     )}
-                  </div>
-                </div>
-              </div>
+                  >
+                    {verdict === "approve"
+                      ? "Approve"
+                      : verdict === "request_changes"
+                        ? "Request changes"
+                        : "Comment"}
+                  </span>
+                )}
+                {comments.length > 0 && (
+                  <span className="text-[10px] text-text-muted">
+                    {comments.length} comment{comments.length === 1 ? "" : "s"}
+                  </span>
+                )}
+                {dirty && <span className="text-[10px] text-warning">• unsaved</span>}
+                {verdictCollapsed && summary && (
+                  <span className="text-[11px] text-text-muted/70 truncate min-w-0 flex-1 text-left">
+                    {summary.split("\n")[0]}
+                  </span>
+                )}
+              </button>
             </div>
           )}
-
-          {/* Chat */}
-          {["ready", "stale", "submitted"].includes(review.state) && (
-            <div className="rounded-lg border border-border bg-bg-card p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Bot className="w-3.5 h-3.5 text-primary" />
-                <span className="text-xs font-medium">Chat with the reviewer</span>
-              </div>
-              <p className="text-[11px] text-text-muted mb-2">
-                Ask follow-up questions. The agent may update the draft above.
-              </p>
-              {chat.length > 0 && (
-                <div className="space-y-2 mb-3 max-h-72 overflow-y-auto pr-1">
-                  {chat.map((m) => (
-                    <div
-                      key={m.id}
-                      className={cn(
-                        "rounded-md p-2 text-xs whitespace-pre-wrap",
-                        m.role === "user"
-                          ? "bg-primary/10 text-text border border-primary/20"
-                          : "bg-bg border border-border text-text-muted",
-                      )}
-                    >
-                      <div className="text-[10px] uppercase tracking-wide opacity-60 mb-1">
-                        {m.role === "user" ? "You" : "Agent"}
-                      </div>
-                      {m.content}
-                    </div>
-                  ))}
-                  {chatSending && (
-                    <div className="flex items-center gap-2 text-xs text-text-muted">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      Agent is thinking...
-                    </div>
-                  )}
-                </div>
-              )}
-              <div className="flex items-end gap-2">
-                <textarea
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendChat();
-                    }
-                  }}
-                  rows={2}
-                  placeholder="Ask the reviewer a question, or request a change..."
-                  disabled={chatSending}
-                  className="flex-1 px-3 py-2 rounded-lg bg-bg border border-border text-sm focus:border-primary focus:ring-1 focus:ring-primary/20 focus:outline-none resize-y disabled:opacity-60"
-                />
-                <button
-                  onClick={handleSendChat}
-                  disabled={chatSending || !chatInput.trim()}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-primary text-white text-xs font-medium hover:bg-primary-hover disabled:opacity-50"
-                >
-                  {chatSending ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Send className="w-3 h-3" />
-                  )}
-                  Send
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Runs + logs (collapsible) */}
-          <div className="rounded-lg border border-border bg-bg-card">
-            <button
-              onClick={() => setShowLogs((v) => !v)}
-              className="w-full flex items-center justify-between gap-2 p-3 text-xs font-medium text-text-muted hover:bg-bg-hover transition-colors"
-            >
-              <span className="flex items-center gap-1.5">
-                {showLogs ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                Agent runs ({runs.length}) &amp; logs
-              </span>
-            </button>
-            {showLogs && (
-              <div className="border-t border-border p-3 space-y-3">
-                {runs.map((r) => (
-                  <div key={r.id} className="p-2 rounded bg-bg border border-border text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium capitalize">{r.kind}</span>
-                      <span
+          {hasDraft && !verdictCollapsed && (
+            <div className="shrink-0 border-b border-border bg-bg-card max-h-[55vh] overflow-y-auto">
+              <div className="max-w-5xl mx-auto px-4 pb-4 space-y-4">
+                {/* Verdict */}
+                <div>
+                  <label className="text-xs font-medium text-text-muted mb-2 block">Verdict</label>
+                  <div className="flex gap-2">
+                    {[
+                      { value: "approve", label: "Approve", Icon: Check, color: "success" },
+                      {
+                        value: "request_changes",
+                        label: "Request Changes",
+                        Icon: X,
+                        color: "error",
+                      },
+                      {
+                        value: "comment",
+                        label: "Comment",
+                        Icon: MessageSquare,
+                        color: "text-muted",
+                      },
+                    ].map(({ value, label, Icon, color }) => (
+                      <button
+                        key={value}
+                        disabled={!isEditable}
+                        onClick={() => {
+                          setVerdict(value);
+                          setDirty(true);
+                        }}
                         className={cn(
-                          "px-1.5 py-0.5 rounded-md text-[10px]",
-                          r.state === "completed"
-                            ? "bg-success/10 text-success"
-                            : r.state === "failed"
-                              ? "bg-error/10 text-error"
-                              : r.state === "running"
-                                ? "bg-warning/10 text-warning"
-                                : "bg-bg-card text-text-muted",
+                          "flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                          verdict === value
+                            ? `bg-${color}/10 text-${color} border-${color}/30`
+                            : "bg-bg border-border text-text-muted hover:bg-bg-hover",
                         )}
                       >
-                        {r.state}
-                      </span>
-                      <span className="text-text-muted ml-auto">
-                        {formatRelativeTime(r.createdAt)}
-                      </span>
-                      {r.costUsd && (
-                        <span className="text-text-muted">${parseFloat(r.costUsd).toFixed(4)}</span>
-                      )}
-                    </div>
-                    {r.errorMessage && (
-                      <div className="mt-1 text-error text-[11px]">{r.errorMessage}</div>
-                    )}
-                  </div>
-                ))}
-                {logs.length > 0 && (
-                  <div className="font-mono text-[11px] bg-bg border border-border rounded p-2 max-h-80 overflow-auto">
-                    <div className="text-text-muted mb-1">Logs for run {logRunId?.slice(0, 8)}</div>
-                    {logs.map((l: any) => (
-                      <div key={l.id} className="whitespace-pre-wrap break-all">
-                        {l.logType && (
-                          <span className="text-text-muted/60 mr-1">[{l.logType}]</span>
-                        )}
-                        {l.content}
-                      </div>
+                        <Icon className="w-3.5 h-3.5" />
+                        {label}
+                      </button>
                     ))}
                   </div>
-                )}
+                </div>
+
+                {/* Summary */}
+                <div>
+                  <label className="text-xs font-medium text-text-muted mb-2 block">
+                    Review Summary
+                  </label>
+                  <textarea
+                    value={summary}
+                    readOnly={!isEditable}
+                    onChange={(e) => {
+                      setSummary(e.target.value);
+                      setDirty(true);
+                    }}
+                    rows={5}
+                    className="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm focus:border-primary focus:ring-1 focus:ring-primary/20 focus:outline-none resize-y disabled:opacity-70"
+                    placeholder="Review summary..."
+                  />
+                </div>
+
+                {/* Inline comments */}
+                <div>
+                  <label className="text-xs font-medium text-text-muted mb-2 block">
+                    Inline Comments ({comments.length})
+                  </label>
+                  <div className="space-y-2">
+                    {comments.map((c, i) => (
+                      <div key={i} className="flex gap-2 p-2 rounded-md bg-bg border border-border">
+                        <div className="flex-1 space-y-1.5">
+                          <div className="flex gap-2">
+                            <input
+                              value={c.path ?? ""}
+                              readOnly={!isEditable}
+                              onChange={(e) => updateComment(i, "path", e.target.value)}
+                              placeholder="file/path.ts"
+                              className="flex-1 px-2 py-1 rounded bg-bg-card border border-border text-xs focus:border-primary focus:outline-none"
+                            />
+                            <input
+                              value={c.line ?? ""}
+                              readOnly={!isEditable}
+                              onChange={(e) =>
+                                updateComment(
+                                  i,
+                                  "line",
+                                  e.target.value ? parseInt(e.target.value) : undefined,
+                                )
+                              }
+                              placeholder="Line"
+                              type="text"
+                              inputMode="numeric"
+                              className="w-20 px-2 py-1 rounded bg-bg-card border border-border text-xs focus:border-primary focus:outline-none"
+                            />
+                          </div>
+                          <textarea
+                            value={c.body ?? ""}
+                            readOnly={!isEditable}
+                            onChange={(e) => updateComment(i, "body", e.target.value)}
+                            placeholder="Comment..."
+                            rows={2}
+                            className="w-full px-2 py-1 rounded bg-bg-card border border-border text-xs focus:border-primary focus:outline-none resize-y"
+                          />
+                        </div>
+                        {isEditable && (
+                          <button
+                            onClick={() => removeComment(i)}
+                            className="text-text-muted hover:text-error transition-colors p-1 self-start"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {isEditable && (
+                      <button
+                        onClick={addComment}
+                        className="flex items-center gap-1 text-xs text-primary hover:text-primary-hover"
+                      >
+                        <Plus className="w-3 h-3" />
+                        Add comment
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-border">
+                  <div className="flex items-center gap-2">
+                    {isEditable && dirty && (
+                      <button
+                        onClick={handleSave}
+                        disabled={saving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-bg border border-border text-xs text-text-muted hover:bg-bg-hover disabled:opacity-50"
+                      >
+                        {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                        Save Draft
+                      </button>
+                    )}
+                    {isEditable && (
+                      <button
+                        onClick={handleSubmit}
+                        disabled={submitting || !verdict}
+                        className="flex items-center gap-1.5 px-4 py-1.5 rounded-md bg-primary text-white text-xs font-medium hover:bg-primary-hover disabled:opacity-50"
+                      >
+                        {submitting ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Send className="w-3 h-3" />
+                        )}
+                        Submit Review
+                      </button>
+                    )}
+                    {review.state === "submitted" && (
+                      <span className="inline-flex items-center gap-1 text-xs text-success">
+                        <Check className="w-3.5 h-3.5" />
+                        Submitted{review.autoSubmitted ? " automatically" : ""}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="relative">
+                      <div className="flex">
+                        <button
+                          onClick={handleMerge}
+                          disabled={merging || !canMerge}
+                          title={mergeBlockedReason || `Merge with ${mergeMethod} strategy`}
+                          className={cn(
+                            "flex items-center gap-1.5 px-3 py-1.5 rounded-l-md text-xs font-medium border disabled:opacity-50",
+                            !checksOk && prIsOpen
+                              ? "bg-warning/10 text-warning hover:bg-warning/20 border-warning/30"
+                              : "bg-success/10 text-success hover:bg-success/20 border-success/20",
+                          )}
+                        >
+                          {merging ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <GitMerge className="w-3 h-3" />
+                          )}
+                          {!checksOk && prIsOpen ? "Merge anyway" : "Merge"}
+                        </button>
+                        <button
+                          onClick={() => setMergeMenuOpen((v) => !v)}
+                          className={cn(
+                            "px-1.5 py-1.5 rounded-r-md text-xs border border-l-0",
+                            !checksOk && prIsOpen
+                              ? "bg-warning/10 text-warning hover:bg-warning/20 border-warning/30"
+                              : "bg-success/10 text-success hover:bg-success/20 border-success/20",
+                          )}
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {mergeMenuOpen && (
+                        <div className="absolute right-0 top-full mt-1 bg-bg-card border border-border rounded-md shadow-lg z-10 py-1 min-w-[140px]">
+                          {(["squash", "merge", "rebase"] as const).map((m) => (
+                            <button
+                              key={m}
+                              onClick={() => {
+                                setMergeMethod(m);
+                                setMergeMenuOpen(false);
+                              }}
+                              className={cn(
+                                "w-full text-left px-3 py-1.5 text-xs hover:bg-bg-hover",
+                                mergeMethod === m ? "text-primary font-medium" : "text-text",
+                              )}
+                            >
+                              {m === "squash"
+                                ? "Squash and merge"
+                                : m === "rebase"
+                                  ? "Rebase and merge"
+                                  : "Create a merge commit"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
-            )}
+            </div>
+          )}
+
+          {/* Working state hint while there's nothing to show yet */}
+          {isWorking && (
+            <div className="shrink-0 border-b border-border bg-bg px-4 py-2">
+              <div className="max-w-5xl mx-auto flex items-center gap-2 text-xs text-text-muted">
+                {review.state === "waiting_ci" ? (
+                  <Clock className="w-3.5 h-3.5" />
+                ) : (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                )}
+                {review.state === "waiting_ci"
+                  ? "Waiting for CI to finish — the agent will start reviewing once checks complete."
+                  : review.state === "queued"
+                    ? "Queued — a worker will pick this up shortly."
+                    : "Agent is reviewing the PR. The draft will appear above when it's done."}
+              </div>
+            </div>
+          )}
+
+          {/* Logs */}
+          <div className="flex-1 overflow-hidden">
+            <ErrorBoundary label="Review log viewer">
+              <LogViewer externalLogs={externalLogs} userMessages={userMessages} />
+            </ErrorBoundary>
           </div>
+
+          {/* Chat composer at the bottom — only when the agent has produced a
+              draft. User turns render inline in the log stream above (via
+              LogViewer's userMessages), and the agent's reply comes back as
+              part of the chat run's log output. */}
+          {hasDraft && (
+            <div className="shrink-0 border-t border-border bg-bg-card px-4 py-2.5">
+              <ChatComposer
+                value={chatInput}
+                onChange={setChatInput}
+                onSend={handleSendChat}
+                sending={chatSending}
+                placeholder="Ask the reviewer a follow-up, or request a change..."
+              />
+            </div>
+          )}
         </div>
+
+        {/* Timeline sidebar — mirrors /tasks/[id] */}
+        {showTimeline && (
+          <div className="hidden md:flex w-80 shrink-0 border-l border-border overflow-auto bg-bg-card flex-col">
+            <div className="flex items-center gap-1 p-2 border-b border-border">
+              <span className="px-2.5 py-1 rounded text-xs bg-primary/10 text-primary font-medium">
+                Pipeline
+              </span>
+            </div>
+            <div className="flex-1 overflow-auto p-3">
+              <ErrorBoundary label="Review pipeline timeline">
+                <ReviewPipelineTimeline review={review} runs={runs} />
+              </ErrorBoundary>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
