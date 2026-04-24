@@ -36,6 +36,10 @@ if (Number.isNaN(REPO_INIT_TIMEOUT_MS) || REPO_INIT_TIMEOUT_MS <= 0) {
   throw new Error("OPTIO_REPO_INIT_TIMEOUT_MS must be a positive integer");
 }
 
+function getServiceAccountName(): string | undefined {
+  return process.env.OPTIO_SERVICE_ACCOUNT_NAME;
+}
+
 /**
  * Parse a JSON-encoded environment variable, returning `undefined` when unset/empty.
  * Throws a descriptive error (including the variable name and raw value) on malformed JSON
@@ -142,7 +146,20 @@ export async function getOrCreateRepoPod(
         }
         await db.delete(repoPods).where(eq(repoPods.id, pod.id));
       } else if (pod.state === "provisioning") {
-        return waitForPodReady(pod.id);
+        // Check if provisioning pod is stale (>10 min old)
+        const ageMs = Date.now() - new Date(pod.createdAt).getTime();
+        const maxProvisioningMs = 10 * 60 * 1000; // 10 minutes
+        if (ageMs > maxProvisioningMs) {
+          logger.warn(
+            { podId: pod.id, ageMs, maxProvisioningMs },
+            "Deleting stale provisioning pod",
+          );
+          await db.delete(repoPods).where(eq(repoPods.id, pod.id));
+          // Continue to create a new pod
+        } else {
+          logger.info({ podId: pod.id, ageMs }, "Waiting for provisioning pod");
+          return waitForPodReady(pod.id);
+        }
       } else if (pod.state === "error") {
         await db.delete(repoPods).where(eq(repoPods.id, pod.id));
       }
@@ -407,6 +424,7 @@ spec:
             ) as unknown[],
           }
         : {}),
+      ...(getServiceAccountName() ? { serviceAccountName: getServiceAccountName() } : {}),
     };
 
     // Add Envoy sidecar containers and volumes when secret proxy is enabled
@@ -652,6 +670,7 @@ async function createRepoPodViaStatefulSet(
             ) as unknown[],
           }
         : {}),
+      ...(getServiceAccountName() ? { serviceAccountName: getServiceAccountName() } : {}),
     };
 
     // Add Envoy sidecar if secret proxy is enabled
@@ -747,6 +766,15 @@ async function createRepoPodViaStatefulSet(
     // Ensure StatefulSet exists and scale to needed replica count
     const homePvcSize = process.env.OPTIO_HOME_PVC_SIZE ?? "10Gi";
     const homePvcStorageClass = process.env.OPTIO_HOME_PVC_STORAGE_CLASS || undefined;
+
+    logger.info(
+      {
+        stsName,
+        serviceAccountName: spec.serviceAccountName,
+        SERVICE_ACCOUNT_NAME_ENV: getServiceAccountName(),
+      },
+      "Calling ensureStatefulSet",
+    );
 
     const sts = await manager.ensureStatefulSet({
       name: stsName,
