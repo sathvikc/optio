@@ -39,6 +39,7 @@ import { messageRoutes } from "./routes/messages.js";
 import { slackRoutes } from "./routes/slack.js";
 
 import { workspaceRoutes } from "./routes/workspaces.js";
+import { userRoutes } from "./routes/users.js";
 import { dependencyRoutes } from "./routes/dependencies.js";
 import { workflowTriggerRoutes } from "./routes/workflow-triggers.js";
 import { mcpServerRoutes } from "./routes/mcp-servers.js";
@@ -273,6 +274,7 @@ export async function buildServer() {
   await app.register(messageRoutes);
   await app.register(slackRoutes);
   await app.register(workspaceRoutes);
+  await app.register(userRoutes);
   await app.register(dependencyRoutes);
   await app.register(workflowTriggerRoutes);
   await app.register(mcpServerRoutes);

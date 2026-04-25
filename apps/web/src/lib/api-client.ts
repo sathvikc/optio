@@ -728,6 +728,17 @@ export const api = {
 
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
 
+  // Users
+  lookupUserByEmail: (email: string) =>
+    request<{
+      user: {
+        id: string;
+        email: string;
+        displayName: string;
+        avatarUrl: string | null;
+      };
+    }>(`/api/users/lookup?email=${encodeURIComponent(email)}`),
+
   // Interactive Sessions
   listSessions: (params?: {
     repoUrl?: string;
